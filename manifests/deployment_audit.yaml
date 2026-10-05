@@ -1,0 +1,50 @@
+# Manifest for test subject #1: the FastAPI + Postgres auth backend.
+# Paths below are as seen from inside the sandbox network, except compose_file/code_path (host paths).
+target:
+  compose_file: fixtures/deployment_audit/docker-compose.yml   # to be created (slice 0, needs Docker)
+  code_path: C:/Projects/Deployment Audit app/backend
+  api_service: api
+  db_service: db
+  base_url: http://api:8000
+  health_path: /health
+  openapi_path: /openapi.json
+
+auth:
+  register_path: /api/register        # JSON {email, password}; password 8-72 chars
+  login_path: /api/login              # form-encoded: username=<email>&password=...
+  login_encoding: form
+  token_field: access_token
+  seed_users:
+    - { email: user0@sandbox.test, password: sandbox-pass-0, role: user }
+    - { email: admin0@sandbox.test, password: sandbox-pass-admin, role: admin }
+
+seed:
+  method: direct_insert               # precomputed bcrypt hash; registering via API would load-test bcrypt
+  rows:
+    users: 50000
+
+envelope:
+  max_vus: 50
+  max_duration_s: 120
+  allow_destructive: false
+
+slos:
+  default:
+    p95_vs_baseline_max: 2.0
+    error_rate_max: 0.01
+
+app_tests:
+  test_command: null                  # backend/test.py is not a real suite yet; needed before refactor verification
+
+resources:
+  api_cpus: 1.0
+  db_cpus: 1.0
+  loadgen_cpus: 1.0
+  host_cpu_limit_pct: 85.0
+
+budgets:
+  max_experiments: 30
+  max_attempts: 3
+  max_followup_rounds: 2
+  wall_clock_s: 3600
+  llm_cost_usd: 5.0
