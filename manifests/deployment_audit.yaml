@@ -1,5 +1,6 @@
 target:
   compose_file: ../fixtures/deployment_audit/docker-compose.yml   # relative to this file
+  code_path: ../../Deployment Audit app/backend                   # relative to this file
   api_service: api
   db_service: db
   base_url: http://api:8000          # inside the sandbox network; nothing is published to the host
@@ -48,3 +49,8 @@ budgets:
   max_attempts: 3
   wall_clock_s: 5400
   max_llm_calls: 20
+llm:
+  planner_model: claude-opus-5-5     # your main cost lever; swap to claude-sonnet-5-5 to cut cost, then re-check brief quality
+  effort: medium
+  max_tokens: 16000                  # per model call
+  planner_max_steps: 12              # model calls the planner may spend; must be <= budgets.max_llm_calls

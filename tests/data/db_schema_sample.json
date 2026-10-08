@@ -1,0 +1,19 @@
+{
+ "tables": {
+  "users": {
+   "columns": [
+    {"name": "id", "type": "uuid", "nullable": false, "default": null},
+    {"name": "email", "type": "character varying", "nullable": false, "default": null},
+    {"name": "hashed_password", "type": "character varying", "nullable": false, "default": null},
+    {"name": "is_active", "type": "boolean", "nullable": false, "default": null},
+    {"name": "created_at", "type": "timestamp without time zone", "nullable": false, "default": "now()"},
+    {"name": "role", "type": "user_role_enum", "nullable": false, "default": "'USER'::user_role_enum"}
+   ],
+   "indexes": [
+    "CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)",
+    "CREATE UNIQUE INDEX ix_users_email ON public.users USING btree (email)"
+   ],
+   "rows": 50000
+  }
+ }
+}

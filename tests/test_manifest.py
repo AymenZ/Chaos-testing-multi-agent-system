@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from swarm.manifest import load_manifest
 
 VALID = {
-    "target": {"compose_file": "c.yml", "api_service": "api", "db_service": "db",
+    "target": {"compose_file": "c.yml", "code_path": "code", "api_service": "api", "db_service": "db",
                "base_url": "http://api:8000"},
     "auth": {"login_path": "/api/login", "login_encoding": "form",
              "seed_users": [{"email": "u@sandbox.test", "password": "sandbox-pass-0", "role": "user"}]},
@@ -16,6 +16,7 @@ VALID = {
     "baseline": {"repeats": 5, "warmup_s": 15, "measure_s": 60},
     "resources": {"api_cpus": 1, "db_cpus": 1, "loadgen_cpus": 1, "host_cpu_limit_pct": 85},
     "budgets": {"max_experiments": 10, "max_attempts": 3, "wall_clock_s": 5400, "max_llm_calls": 20},
+    "llm": {"planner_model": "claude-opus-5-5", "effort": "medium", "max_tokens": 16000, "planner_max_steps": 12},
 }
 
 def write(tmp_path, data):
@@ -32,10 +33,17 @@ def test_path_without_leading_slash_rejected(tmp_path):
     with pytest.raises(ValidationError):
         load_manifest(write(tmp_path, bad))
 
-def test_real_manifest_points_at_an_existing_compose_file():
+def test_planner_steps_cannot_exceed_the_llm_budget(tmp_path):
+    bad = copy.deepcopy(VALID); bad["llm"]["planner_max_steps"] = 99
+    with pytest.raises(ValidationError):
+        load_manifest(write(tmp_path, bad))
+
+def test_real_manifest_points_at_existing_paths():
     m = load_manifest("manifests/deployment_audit.yaml")
     assert m.target.compose_file.exists()
-    assert m.compose_env == {"API_CPUS": "1", "DB_CPUS": "1", "LOADGEN_CPUS": "1"}
+    assert (m.target.code_path / "app" / "main.py").exists()    # the planner reads the code the sandbox builds
+    env = m.compose_env
+    assert env["CODE_PATH"] == str(m.target.code_path) and env["API_CPUS"] == "1"
 
 def test_compose_path_is_relative_to_manifest(tmp_path):
     m = load_manifest(write(tmp_path, VALID))

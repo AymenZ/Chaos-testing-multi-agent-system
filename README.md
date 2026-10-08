@@ -197,6 +197,20 @@ Open <http://127.0.0.1:8000/docs> and use **Authorize**: `user0@example.com` / `
 
     .venv\Scripts\python -c "from swarm.manifest import load_manifest; from swarm.preflight import make_sandbox; make_sandbox(load_manifest('manifests/deployment_audit.yaml')).down()"
 
+## Run the planner on its own
+
+Needs an API key in the environment (`$env:ANTHROPIC_API_KEY = "..."` in PowerShell). Output goes to `runs/planner_<time>/` as `brief.json` plus `audit.jsonl` (every denied read, dropped claim and budget event).
+
+Offline, using saved facts (no Docker):
+
+    .venv\Scripts\python scripts\run_planner.py --offline
+
+Against the live sandbox (launch it first):
+
+    .venv\Scripts\python scripts\run_planner.py
+
+The model, effort and step budget live in the manifest's `llm` section.
+
 ## Dev
 
     python -m venv .venv

@@ -23,8 +23,9 @@ services:
 
   api:
     build:
-      context: ../../../Deployment Audit app/backend          # the target's code (a path from this file)
-      dockerfile: ../../chaos-engineering multi agent system/fixtures/deployment_audit/Dockerfile   # path from the context above
+      # Both come from the manifest (compose_env). The defaults only keep hand-typed docker commands working.
+      context: ${CODE_PATH:-../../../Deployment Audit app/backend}
+      dockerfile: ${DOCKERFILE_PATH:-../../chaos-engineering multi agent system/fixtures/deployment_audit/Dockerfile}
     environment:
       DATABASE_URL: postgresql+psycopg2://sandbox:sandbox@db:5432/app
       SECRET_KEY: sandbox-only-not-a-real-secret
