@@ -1,0 +1,36 @@
+# fixtures/deployment_audit/docker-compose.yml
+# The sandbox: an API and its database on a private network with no route to the internet.
+# Nothing is published to the host. All traffic (preflight probes, k6 later) comes from inside.
+networks:
+  sandbox:
+    internal: true            # no gateway, so no internet. Preflight verifies this.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sandbox
+      POSTGRES_PASSWORD: sandbox
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sandbox -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    cpus: ${DB_CPUS:-1}       # values come from the manifest's resources section
+    mem_limit: 1g
+    networks: [sandbox]
+
+  api:
+    build:
+      context: ../../../Deployment Audit app/backend          # the target's code (a path from this file)
+      dockerfile: ../../chaos-engineering multi agent system/fixtures/deployment_audit/Dockerfile   # path from the context above
+    environment:
+      DATABASE_URL: postgresql+psycopg2://sandbox:sandbox@db:5432/app
+      SECRET_KEY: sandbox-only-not-a-real-secret
+    depends_on:
+      db:
+        condition: service_healthy
+    cpus: ${API_CPUS:-1}
+    mem_limit: 512m
+    networks: [sandbox]

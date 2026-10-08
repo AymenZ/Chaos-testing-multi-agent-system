@@ -1,50 +1,50 @@
-# Manifest for test subject #1: the FastAPI + Postgres auth backend.
-# Paths below are as seen from inside the sandbox network, except compose_file/code_path (host paths).
 target:
-  compose_file: fixtures/deployment_audit/docker-compose.yml   # to be created (slice 0, needs Docker)
-  code_path: C:/Projects/Deployment Audit app/backend
+  compose_file: ../fixtures/deployment_audit/docker-compose.yml   # relative to this file
   api_service: api
   db_service: db
-  base_url: http://api:8000
+  base_url: http://api:8000          # inside the sandbox network; nothing is published to the host
   health_path: /health
   openapi_path: /openapi.json
 
 auth:
-  register_path: /api/register        # JSON {email, password}; password 8-72 chars
-  login_path: /api/login              # form-encoded: username=<email>&password=...
+  login_path: /api/login             # form-encoded: username=<email>&password=...
   login_encoding: form
   token_field: access_token
-  seed_users:
-    - { email: user0@sandbox.test, password: sandbox-pass-0, role: user }
-    - { email: admin0@sandbox.test, password: sandbox-pass-admin, role: admin }
+  seed_users:                        # NOT .test/.local: the app's EmailStr rejects them, so /api/me would 500
+    - { email: user0@example.com, password: sandbox-pass-0, role: user }
+    - { email: admin0@example.com, password: sandbox-pass-admin, role: admin }
 
 seed:
-  method: direct_insert               # precomputed bcrypt hash; registering via API would load-test bcrypt
+  method: direct_insert              # precomputed bcrypt hash, so setup isn't a bcrypt load test
   rows:
     users: 50000
 
-envelope:
-  max_vus: 50
-  max_duration_s: 120
-  allow_destructive: false
+limits:
+  max_rps: 1000                      # raise for calibration, then ~4x measured capacity
+  max_duration_s: 180                # per card: warmup + normal + burst + tail
+  max_vus: 1000                      # VU pool size. Worst case is max_rps x request_timeout_s (5000), so
+                                     # expect dropped iterations at the top; check RAM before raising
+  request_timeout_s: 5
 
-slos:
+rules:
   default:
-    p95_vs_baseline_max: 2.0
+    p95_vs_baseline_max: 2.0         # capacity cards (up to 1x capacity)
     error_rate_max: 0.01
+    recovery_max_s: 30               # burst cards: back to normal within this
 
-app_tests:
-  test_command: null                  # backend/test.py is not a real suite yet; needed before refactor verification
+baseline:
+  repeats: 5
+  warmup_s: 15
+  measure_s: 60
 
 resources:
-  api_cpus: 1.0
-  db_cpus: 1.0
-  loadgen_cpus: 1.0
-  host_cpu_limit_pct: 85.0
+  api_cpus: 1
+  db_cpus: 1
+  loadgen_cpus: 1
+  host_cpu_limit_pct: 85
 
 budgets:
-  max_experiments: 30
+  max_experiments: 10
   max_attempts: 3
-  max_followup_rounds: 2
-  wall_clock_s: 3600
-  llm_cost_usd: 5.0
+  wall_clock_s: 5400
+  max_llm_calls: 20

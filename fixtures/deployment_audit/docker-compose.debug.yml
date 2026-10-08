@@ -1,0 +1,12 @@
+# Debug only: a forwarder so your browser can reach the API. The api container stays isolated.
+networks:
+  outside: {}
+
+services:
+  proxy:
+    image: alpine/socat
+    command: tcp-listen:8000,fork,reuseaddr tcp:api:8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [sandbox, outside]
+    depends_on: [api]

@@ -1,105 +1,129 @@
-"""Manifest: the input contract and safety envelope for one target."""
-
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field , HttpUrl, field_validator, model_validator
 
-
-class _Strict(BaseModel):
+class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    
+def _starts_with_slash(v: str) -> str:
+    if not v.startswith("/"):
+        raise ValueError("must start with '/' ")
+    return v
 
-
-class Target(_Strict):
+class Target(Strict):
     compose_file: Path
-    api_service: str = "api"
-    db_service: str = "db"
+    api_service: str
+    db_service: str
+    base_url: HttpUrl          # as seen from inside the sandbox network; the only host we talk to
     health_path: str = "/health"
-    base_url: str  # as seen from inside the sandbox network
-    code_path: Path
     openapi_path: str = "/openapi.json"
 
-
-class SeedUser(_Strict):
+    _check_paths = field_validator("health_path", "openapi_path")(_starts_with_slash)
+    
+class SeedUser(Strict):
     email: str
-    password: str
-    role: Literal["user", "admin"] = "user"
-
-
-class Auth(_Strict):
-    register_path: str
+    password: str = Field(min_length=8,max_length=72)
+    role: Literal["user","admin"]
+    
+class Auth(Strict):
     login_path: str
-    login_encoding: Literal["form", "json"] = "form"
-    username_field: str = "username"
-    password_field: str = "password"
+    login_encoding: Literal["form","json"]
     token_field: str = "access_token"
     seed_users: list[SeedUser] = Field(min_length=1)
-
-
-class SeedPlan(_Strict):
-    method: Literal["direct_insert", "api"] = "direct_insert"
-    rows: dict[str, int]  # table -> row count; missing indexes only show at volume
-
-
-class Envelope(_Strict):
-    max_vus: int = Field(default=50, ge=1)
-    max_duration_s: int = Field(default=120, ge=1)
-    allow_destructive: bool = False
-    allowed_fault_types: list[str] = Field(default_factory=list)
-    allowed_hosts: list[str] = Field(default_factory=list)  # defaults to base_url host
-
-
-class SLO(_Strict):
-    p95_vs_baseline_max: float = Field(default=2.0, gt=1)
-    error_rate_max: float = Field(default=0.01, ge=0, le=1)
-    p95_ms_ceiling: float | None = None  # optional absolute ceiling
-
-
-class AppTests(_Strict):
-    test_command: str | None = None
-
-
-class Resources(_Strict):
-    api_cpus: float = 1.0
-    db_cpus: float = 1.0
-    loadgen_cpus: float = 1.0
-    api_mem_mb: int = 512
-    db_mem_mb: int = 1024
-    loadgen_mem_mb: int = 512
-    host_cpu_limit_pct: float = 85.0
-
-
-class Budgets(_Strict):
-    max_experiments: int = 30
-    max_attempts: int = 3
-    max_followup_rounds: int = 2
-    wall_clock_s: int = 3600
-    llm_cost_usd: float = 5.0
-
-
-class Manifest(_Strict):
-    target: Target
-    auth: Auth
-    seed: SeedPlan
-    envelope: Envelope = Field(default_factory=Envelope)
-    slos: dict[str, SLO]
-    app_tests: AppTests = Field(default_factory=AppTests)
-    resources: Resources = Field(default_factory=Resources)
-    budgets: Budgets = Field(default_factory=Budgets)
-
+    
+    _check_login = field_validator("login_path")(_starts_with_slash)
+    
     @model_validator(mode="after")
-    def _defaults(self) -> "Manifest":
-        if "default" not in self.slos:
-            raise ValueError("slos must define a 'default' class")
-        if not self.envelope.allowed_hosts:
-            host = urlparse(self.target.base_url).hostname
-            if not host:
-                raise ValueError(f"cannot derive host from base_url {self.target.base_url!r}")
-            self.envelope.allowed_hosts = [host]
+    def _users_ok(self):
+        emails = [u.email for u in self.seed_users]
+        if len(set(emails)) != len(emails):
+            raise ValueError("seed_users emails must be unique")
+        if not any(u.role == "user" for u in self.seed_users):
+            raise ValueError("need at least one seed user with role 'user'")
         return self
 
+class Seed(Strict):
+    method: Literal["direct_insert"]
+    rows: dict[str, int]
+
+    @field_validator("rows")
     @classmethod
-    def load(cls, path: str | Path) -> "Manifest":
-        return cls.model_validate(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
+    def _rows_positive(cls, v):
+        if not v or any(n <= 0 for n in v.values()):
+            raise ValueError("rows must be non-empty with counts above zero")
+        return v
+
+
+class Limits(Strict):
+    max_rps: int = Field(gt=0)
+    max_duration_s: int = Field(gt=0)
+    max_vus: int = Field(gt=0)
+    request_timeout_s: float = Field(gt=0)
+
+
+class RuleSet(Strict):
+    p95_vs_baseline_max: float = Field(gt=1)
+    error_rate_max: float = Field(ge=0, le=1)
+    recovery_max_s: float = Field(gt=0)
+
+
+class Rules(Strict):
+    default: RuleSet
+
+
+class Baseline(Strict):
+    repeats: int = Field(ge=3, le=10)
+    warmup_s: int = Field(ge=0)
+    measure_s: int = Field(gt=0)
+
+
+class Resources(Strict):
+    api_cpus: int = Field(gt=0)
+    db_cpus: int = Field(gt=0)
+    loadgen_cpus: int = Field(gt=0)
+    host_cpu_limit_pct: float = Field(gt=0, le=100)
+
+
+class Budgets(Strict):
+    max_experiments: int = Field(gt=0)
+    max_attempts: int = Field(ge=1)
+    wall_clock_s: int = Field(gt=0)
+    max_llm_calls: int = Field(ge=0)    # 0 is fine for the no-LLM slice
+
+class Manifest(Strict):
+    target: Target
+    auth: Auth
+    seed: Seed
+    limits: Limits
+    rules: Rules
+    baseline: Baseline
+    resources: Resources
+    budgets: Budgets
+    
+    @model_validator(mode="after")
+    def _cross_checks(self):
+        if self.limits.request_timeout_s >= self.limits.max_duration_s:
+            raise ValueError("request_timeout_s must be shorter than max_duration_s")
+        return self
+    
+    @property
+    def allowed_hosts(self) -> set[str]:
+        """The only hosts the runner may contact, derived from the URLs, never typed twice."""
+        return {self.target.base_url.host}
+
+    @property
+    def compose_env(self) -> dict[str, str]:
+        """Resource limits handed to docker compose, so they are typed once, here."""
+        r = self.resources
+        return {"API_CPUS": str(r.api_cpus), "DB_CPUS": str(r.db_cpus), "LOADGEN_CPUS": str(r.loadgen_cpus)}
+    
+def load_manifest(path: str | Path) -> Manifest:
+    path = Path(path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # Resolve the compose path relative to the manifest's own folder, not the cwd.
+    target = data.get("target") if isinstance(data, dict) else None
+    if isinstance(target, dict) and "compose_file" in target:
+        target["compose_file"] = str((path.parent / target["compose_file"]).resolve())
+    return Manifest.model_validate(data)
