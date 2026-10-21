@@ -35,3 +35,12 @@ services:
     cpus: ${API_CPUS:-1}
     mem_limit: 512m
     networks: [sandbox]
+
+  # The load generator. Never started by `up` (profile); the runner starts it per experiment with
+  # `docker compose run`, on the same isolated network, with the run's files mounted at /work.
+  k6:
+    image: grafana/k6:1.0.0
+    profiles: ["tools"]
+    cpus: ${LOADGEN_CPUS:-1}
+    mem_limit: 1g
+    networks: [sandbox]

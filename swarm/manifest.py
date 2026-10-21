@@ -78,6 +78,8 @@ class Baseline(Strict):
     repeats: int = Field(ge=3, le=10)
     warmup_s: int = Field(ge=0)
     measure_s: int = Field(gt=0)
+    normal_rps: float = Field(gt=0)         # requests/s you consider usual for this backend (a stand-in); baseline runs here
+    ramp_step_factor: float = Field(gt=1)   # each capacity-ramp step is this many times the one before
 
 
 class Resources(Strict):
@@ -99,6 +101,8 @@ class Llm(Strict):
     effort: Literal["low", "medium", "high", "xhigh", "max"]
     max_tokens: int = Field(gt=0)               # per model call
     planner_max_steps: int = Field(ge=2)        # model calls the planner may spend exploring + submitting
+    tester_model: str
+    tester_max_calls: int = Field(ge=1)         # first attempt plus repairs when its cards are rejected
 
 
 class Manifest(Strict):
@@ -116,8 +120,10 @@ class Manifest(Strict):
     def _cross_checks(self):
         if self.limits.request_timeout_s >= self.limits.max_duration_s:
             raise ValueError("request_timeout_s must be shorter than max_duration_s")
-        if self.llm.planner_max_steps > self.budgets.max_llm_calls:
-            raise ValueError("llm.planner_max_steps cannot exceed budgets.max_llm_calls")
+        if self.baseline.normal_rps > self.limits.max_rps:
+            raise ValueError("baseline.normal_rps cannot exceed limits.max_rps")
+        if self.llm.planner_max_steps + self.llm.tester_max_calls > self.budgets.max_llm_calls:
+            raise ValueError("llm.planner_max_steps + llm.tester_max_calls cannot exceed budgets.max_llm_calls")
         return self
     
     @property

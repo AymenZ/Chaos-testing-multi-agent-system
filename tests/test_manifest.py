@@ -13,10 +13,11 @@ VALID = {
     "seed": {"method": "direct_insert", "rows": {"users": 1000}},
     "limits": {"max_rps": 300, "max_duration_s": 180, "max_vus": 500, "request_timeout_s": 5},
     "rules": {"default": {"p95_vs_baseline_max": 2.0, "error_rate_max": 0.01, "recovery_max_s": 30}},
-    "baseline": {"repeats": 5, "warmup_s": 15, "measure_s": 60},
+    "baseline": {"repeats": 5, "warmup_s": 15, "measure_s": 60, "normal_rps": 20, "ramp_step_factor": 2.0},
     "resources": {"api_cpus": 1, "db_cpus": 1, "loadgen_cpus": 1, "host_cpu_limit_pct": 85},
     "budgets": {"max_experiments": 10, "max_attempts": 3, "wall_clock_s": 5400, "max_llm_calls": 20},
-    "llm": {"planner_model": "claude-opus-5-5", "effort": "medium", "max_tokens": 16000, "planner_max_steps": 12},
+    "llm": {"planner_model": "claude-opus-5-5", "effort": "medium", "max_tokens": 16000, "planner_max_steps": 12,
+            "tester_model": "claude-opus-5-5", "tester_max_calls": 2},
 }
 
 def write(tmp_path, data):
@@ -61,5 +62,15 @@ def test_missing_section_rejected(tmp_path):
 
 def test_typo_key_rejected(tmp_path):
     bad = copy.deepcopy(VALID); bad["limits"]["max_rsp"] = 100
+    with pytest.raises(ValidationError):
+        load_manifest(write(tmp_path, bad))
+
+def test_normal_rps_cannot_exceed_the_rate_limit(tmp_path):
+    bad = copy.deepcopy(VALID); bad["baseline"]["normal_rps"] = 301      # max_rps is 300
+    with pytest.raises(ValidationError):
+        load_manifest(write(tmp_path, bad))
+
+def test_ramp_step_factor_must_actually_grow(tmp_path):
+    bad = copy.deepcopy(VALID); bad["baseline"]["ramp_step_factor"] = 1.0
     with pytest.raises(ValidationError):
         load_manifest(write(tmp_path, bad))

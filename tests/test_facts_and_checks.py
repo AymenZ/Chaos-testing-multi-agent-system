@@ -14,7 +14,6 @@ from swarm.tools.openapi import index_by_key, summarize_openapi
 SPEC = json.loads(Path("tests/data/openapi_sample.json").read_text(encoding="utf-8"))
 SUMMARY = summarize_openapi(SPEC)
 INDEX = index_by_key(SUMMARY)
-DB = {"tables": {"users": {"columns": [], "indexes": [], "rows": 50000}}}
 
 LOGIN = "POST /api/login"
 ME = "GET /api/me"
@@ -69,8 +68,8 @@ def jail(tmp_path):
     return CodeJail(root, AuditLog())
 
 
-def code_ev(quote="pwd_context = CryptContext", ref="app/security.py", **kw):
-    return Evidence(kind="code", ref=ref, quote=quote, **kw)
+def code_ev(quote="pwd_context = CryptContext", ref="app/security.py"):
+    return Evidence(ref=ref, quote=quote)
 
 
 LOGIN_RECIPE = Recipe(auth_role="none", form_body={"username": "{{user.email}}", "password": "{{user.password}}"})
@@ -87,7 +86,7 @@ def note(key, suit="good", recipe=None, ev=None):
 
 
 def run(out, jail):
-    return check_output(out, SUMMARY, DB, jail, jail.audit)
+    return check_output(out, SUMMARY, jail, jail.audit)
 
 
 def test_clean_output_passes_untouched(jail):
@@ -95,9 +94,9 @@ def test_clean_output_passes_untouched(jail):
     assert res.dropped == [] and res.blocking == [] and res.output.baseline_targets == [ME]
 
 
-def test_unknown_and_duplicate_endpoints_are_dropped(jail):
-    res = run(output([note(ME, recipe=ME_RECIPE), note("GET /api/invented"), note(ME, recipe=ME_RECIPE)]), jail)
-    assert [n.key for n in res.output.endpoints] == [ME] and len(res.dropped) == 2
+def test_unknown_endpoints_are_dropped(jail):
+    res = run(output([note(ME, recipe=ME_RECIPE), note("GET /api/invented")]), jail)
+    assert [n.key for n in res.output.endpoints] == [ME] and len(res.dropped) == 1
 
 
 def test_fabricated_quote_is_dropped_real_quote_kept(jail):
@@ -105,10 +104,9 @@ def test_fabricated_quote_is_dropped_real_quote_kept(jail):
     assert len(res.output.endpoints[0].evidence) == 1 and "quote not found" in res.dropped[0]
 
 
-def test_quote_must_sit_inside_the_cited_lines(jail):
-    ok = run(output([note(ME, recipe=ME_RECIPE, ev=[code_ev("return pwd_context.verify", line_start=4, line_end=4)])]), jail)
-    bad = run(output([note(ME, recipe=ME_RECIPE, ev=[code_ev("return pwd_context.verify", line_start=1, line_end=1)])]), jail)
-    assert ok.dropped == [] and bad.dropped
+def test_whitespace_differences_in_a_quote_are_tolerated(jail):
+    res = run(output([note(ME, recipe=ME_RECIPE, ev=[code_ev("return   pwd_context.verify(plain,\n hashed)")])]), jail)
+    assert res.dropped == []
 
 
 def test_evidence_in_files_outside_the_jail_is_dropped(jail):
@@ -116,10 +114,9 @@ def test_evidence_in_files_outside_the_jail_is_dropped(jail):
     assert res.output.endpoints[0].evidence == [] and len(res.dropped) == 2
 
 
-def test_authed_endpoint_with_no_auth_recipe_is_not_runnable(jail):
+def test_authed_endpoint_with_no_auth_recipe_loses_its_recipe_and_cannot_baseline(jail):
     res = run(output([note(ME, recipe=Recipe(auth_role="none")), note(LOGIN, recipe=LOGIN_RECIPE)], baseline=(ME, LOGIN)), jail)
-    me = next(n for n in res.output.endpoints if n.key == ME)
-    assert me.recipe is None and me.load_suitability == "needs_data"
+    assert next(n for n in res.output.endpoints if n.key == ME).recipe is None
     assert res.output.baseline_targets == [LOGIN]
 
 
@@ -135,18 +132,12 @@ def test_unknown_query_params_rejected(jail):
     assert next(n for n in res.output.endpoints if n.key == USERS).recipe is None
 
 
-def test_path_param_endpoints_are_forced_to_needs_data(jail):
-    res = run(output([note(BYID, recipe=Recipe(auth_role="admin")), note(ME, recipe=ME_RECIPE)]), jail)
-    n = next(n for n in res.output.endpoints if n.key == BYID)
-    assert (n.load_suitability, n.recipe) == ("needs_data", None)
+def test_path_param_endpoints_cannot_be_baseline_targets(jail):
+    res = run(output([note(BYID, recipe=Recipe(auth_role="admin")), note(ME, recipe=ME_RECIPE)], baseline=(BYID, ME)), jail)
+    assert res.output.baseline_targets == [ME]
 
 
-def test_good_without_recipe_is_downgraded(jail):
-    res = run(output([note(ME), note(LOGIN, recipe=LOGIN_RECIPE)], baseline=(LOGIN,)), jail)
-    assert next(n for n in res.output.endpoints if n.key == ME).load_suitability == "needs_data"
-
-
-def test_no_runnable_baseline_target_blocks(jail):
+def test_no_usable_baseline_target_blocks(jail):
     res = run(output([note(ME, suit="avoid", recipe=ME_RECIPE)], baseline=(ME,)), jail)
     assert res.blocking and "baseline" in res.blocking[0]
 

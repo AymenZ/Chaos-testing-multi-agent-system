@@ -20,13 +20,10 @@ class Signal(str, Enum):
 
 
 class Evidence(Strict):
-    """A claim's receipt. For kind='code' the quote must literally appear in the file (and inside
-    the cited lines, if given); checks.py verifies it. 'openapi' and 'db_schema' refs must exist."""
-    kind: Literal["code", "openapi", "db_schema"]
-    ref: str = Field(description="file path relative to the code root | 'METHOD /path' | table name")
+    """A claim's receipt: a short verbatim quote from a source file. checks.py verifies that the
+    quote literally appears in that file, and discards the claim if it does not."""
+    ref: str = Field(description="file path relative to the code root")
     quote: str = Field(min_length=3, max_length=300, description="short verbatim excerpt")
-    line_start: int | None = Field(default=None, ge=1)
-    line_end: int | None = Field(default=None, ge=1)
 
 
 class Recipe(Strict):

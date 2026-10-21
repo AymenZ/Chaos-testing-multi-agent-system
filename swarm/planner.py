@@ -63,7 +63,7 @@ How to work:
 {_SIGNALS}
 4. Call submit_brief exactly once when ready. If it is rejected, read the reason, fix the problem and submit again.
 
-Evidence: every claim carries a receipt. For code, give the file path (relative to the code root), optionally line numbers, and a short VERBATIM quote of at most 200 characters; quotes are mechanically checked against the file and any claim whose quote cannot be found is discarded, so copy exactly rather than paraphrase. For an endpoint use its key such as "GET /path"; for a table use its name.
+Evidence: every claim carries a receipt: the file path (relative to the code root) and a short VERBATIM quote of at most 200 characters from it. Quotes are mechanically checked against the file, and any claim whose quote cannot be found is discarded, so copy exactly rather than paraphrase.
 
 Recipes: describe a valid request with an auth_role and body/query values that satisfy the schema in get_api_summary. Never invent credentials or identifiers. Where a login name or password is needed, write the placeholders {{{{user.email}}}}, {{{{user.password}}}}, {{{{admin.email}}}} and {{{{admin.password}}}}; code fills them in later. An endpoint that needs an identifier you cannot know (a path parameter) is "needs_data" and has no recipe.
 
@@ -168,7 +168,7 @@ def plan(m: Manifest, client: Any, facts: Facts, jail: CodeJail, audit: AuditLog
             problems = "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()[:8])
             audit.event("submit_rejected", why="schema", detail=_short(problems))
             return f"Rejected, the brief does not match the schema: {problems}", True, None
-        result = check_output(out, summary(), fact("db", facts.db_schema), jail, audit)
+        result = check_output(out, summary(), jail, audit)
         if result.blocking:
             audit.event("submit_rejected", why="checks", detail=result.blocking)
             return ("Rejected: " + "; ".join(result.blocking) + ". Dropped so far: "
