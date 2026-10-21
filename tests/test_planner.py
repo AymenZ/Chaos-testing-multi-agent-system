@@ -38,7 +38,7 @@ class ScriptedClient:
 
 
 def good_brief() -> dict:
-    ev = [dict(kind="code", ref="app/security.py", quote="pwd_context = CryptContext")]
+    ev = [dict(ref="app/security.py", quote="pwd_context = CryptContext")]
     return dict(
         summary="A small login service with JWT auth, backed by one Postgres table.",
         endpoints=[
@@ -114,7 +114,7 @@ def test_unusable_brief_is_rejected_with_the_reason(env):
 
 
 def test_fabricated_evidence_is_dropped_but_the_brief_survives(env):
-    b = good_brief(); b["endpoints"][0]["evidence"].append(dict(kind="code", ref="app/security.py", quote="made up quote"))
+    b = good_brief(); b["endpoints"][0]["evidence"].append(dict(ref="app/security.py", quote="made up quote"))
     brief, _ = run(env, reply(use("a", "submit_brief", **b)))
     assert len(brief.output.endpoints[0].evidence) == 1 and any("quote not found" in d for d in brief.dropped)
 
