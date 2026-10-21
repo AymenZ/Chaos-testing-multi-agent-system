@@ -92,3 +92,15 @@ def test_reset_order_is_stop_drop_clone_start(monkeypatch, tmp_path):
     monkeypatch.setattr(sb, "wait_healthy", lambda url, timeout_s=60: log.append("health"))
     sb.reset("http://api:8000/health")
     assert log == ["stop", "DROP", "CREATE", "start", "health"]
+
+
+def test_run_tool_mounts_an_absolute_path_so_docker_never_sees_a_volume_name(monkeypatch, tmp_path):
+    import subprocess
+    from types import SimpleNamespace as NS
+    seen = {}
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: seen.update(cmd=cmd) or NS(returncode=0, stdout="", stderr=""))
+    monkeypatch.chdir(tmp_path)
+    Sandbox(tmp_path / "c.yml").run_tool("k6", "run", "/work/script.js", mount=__import__("pathlib").Path("runs/load_x"),
+                                         name="chaos_k6", timeout=5)
+    mount = seen["cmd"][seen["cmd"].index("-v") + 1]
+    assert mount == f"{(tmp_path / 'runs' / 'load_x').resolve()}:/work"

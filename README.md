@@ -10,8 +10,6 @@ A **multi-agent system** that tries to break a web backend on purpose, inside a 
 
 An agent never measures and never grades its own work. Nodes share one state and are wired as a graph (LangGraph) with retry loops, human approval gates, and hard budgets so it always stops.
 
-Full design: [docs/architecture_v2.md](docs/architecture_v2.md)
-
 ---
 ## v1 graph (target)
 
@@ -40,15 +38,15 @@ flowchart TD
 
 | Node | v1 scope | Status |
 |---|---|---|
-| Manifest | Hand-written file for the login backend | built |
-| Preflight | Start the sandbox, prove it has no internet, seed data, check login, save a clean copy | written, untested against Docker |
-| Planner | Reads the OpenAPI spec and picks which endpoints are worth hammering; writes one brief | agent |
-| Baseline | Normal-speed runs for the usual wobble, then a ramp to find where the backend starts to struggle (its capacity). The tester asks for load as a multiple of that capacity | maths built, runner needed |
-| Request tester | Turns the brief into experiment cards | agent |
-| Guardrail | Limits check and API-description check; no scheduling | built |
-| Runner | Reset, send the burst, record measurements | needs Docker + k6 |
-| Validator | Fair test? Says whether a retry should rerun or redesign | built |
-| Verdict | Pass or fail against baseline | built |
+| Manifest | The rulebook for the login backend: limits, rules, login details, budgets, model settings, code location | **built, tested** |
+| Preflight | Start the sandbox, prove it has no internet, seed data, check login, save a clean copy | **built, ran on real Docker** |
+| Planner | An agent that explores the code with read-only tools, calls the API and database fact tools itself, and writes one brief. Claims without a verifiable quote are dropped | **built, tested with a fake model; not yet run on a real one** |
+| Baseline | Runs at `normal_rps` (what the manifest calls usual traffic) several times for the normal speed and its wobble, then ramps up from there (doubling by default) to find where the backend starts to struggle (its capacity). If even usual traffic is unhealthy, that is reported as a finding. The tester asks for load as a multiple of capacity | maths and the capacity-usability check built; needs the runner to measure |
+| Request tester | One structured model call (with repairs) that turns the brief and measured capacity into a few experiment cards. Load is a multiple of capacity; it accepts Validator feedback to revise a card | **built, tested with a fake model; not yet run on a real one** |
+| Guardrail | Turns each card into exact numbers: clamps load and duration to the manifest limits (and records it), rejects unrunnable cards, enforces the experiment budget, double-checks the target host | **built, tested** |
+| Runner | Reset, one smoke request, then k6 (a one-off container on the sandbox network) sends the load; reads k6's summary and adds machine peaks | **built, tested against fakes; not yet run against real k6** |
+| Validator | Fair test? Says whether a retry should rerun or redesign | to build |
+| Verdict | Pass or fail against baseline | to build |
 | Report | Per experiment: pass / fail / could not test, with numbers | to build |
 
 Out of v1: scheduler, explainer, human gates, database and failure testers, refactor, follow-up rounds.
@@ -126,33 +124,31 @@ flowchart TD
 
 | Folder | What |
 |---|---|
-| `swarm/` | The product: graph and its logic. Core logic built |
-| `adapters/` | Glue to Docker, the database and the host machine. Empty |
+| `swarm/` | The product. So far: manifest, preflight, baseline maths, the planner and its checks. `swarm/k6/script.js` is the one fixed load script every run uses. `swarm/tools/` holds what the planner uses: the jailed code reader, the API summary and the database schema reader |
+| `adapters/` | Glue to the outside world: the Docker sandbox wrapper and the database seeder |
 | `manifests/` | One rulebook per target |
-| `fixtures/` | Practice backends with planted bugs and healthy controls, so we know the right answers. Empty |
-| `evals/` | Scoreboard: runs the swarm on fixtures repeatedly, reports hit and false-alarm rates. Empty |
-| `runs/` | Output of each run: cards, measurements, audit log. Git-ignored |
-| `tests/` | Unit tests for the core (27 passing) |
-| `docs/` | Full architecture |
+| `fixtures/` | `deployment_audit/` is the sandbox definition (compose files, Dockerfile, debug forwarder). Practice backends with planted bugs are not built yet |
+| `scripts/` | Run a piece on its own: `run_planner.py`, `run_load.py` (one load plan against the live sandbox) |
+| `evals/` | Scoreboard for the agents against fixtures. Empty |
+| `runs/` | Output of each run: briefs, measurements, audit log. Git-ignored |
+| `tests/` | 129 unit tests. `tests/data/` holds a real API description and database schema from the target |
 
 ## Prerequisites
 
-Present: Python 3.12, Git. **Needed:** WSL2 + Docker Desktop (runs the sandbox). Later: an LLM API key. k6, Toxiproxy and Postgres run as Docker images.
+Python 3.12, Git, WSL2 and Docker Desktop (installed; runs the sandbox). An Anthropic API key is needed to run the planner. k6 and Postgres run as Docker images, so nothing else to install.
 
 ## Build order
 
-| Slice | What | Status |
+| Step | What | Status |
 |---|---|---|
-| 0a | Cards, manifest, guardrail, validator, verdict | **done** |
-| 0b | Sandbox, seeding, runner, real baseline | needs Docker |
-| 1 | **v1 graph**: planner + request tester agents, report | next |
-| 2 | Scheduler, more retry paths | |
-| 3 | Explainer | |
-| 4 | Database tester | |
-| 5 | Failure tester | |
-| 6 | Planner + follow-up loop | |
-| 7 | Refactor, human gate, verify | |
-| 8 | Fixtures + evals (start early if possible) | |
+| Manifest, sandbox, preflight | The environment | **done** |
+| Baseline maths | Summary and capacity from measurements | **done** (needs the runner to feed it) |
+| Planner agent | Explores the target, writes the brief | **done**, awaiting its first real-model run |
+| Request tester | Turns a brief into experiment cards | **done**, awaiting its first real-model run |
+| Guardrail, Runner | Resolve cards into exact experiments; send the load | **done**; Runner awaiting its first real k6 run |
+| Validator, Verdict, Report | The remaining deterministic nodes | next: Validator |
+| Graph and state | Wiring the nodes together | you |
+| Later | Scheduler, explainer, database and failure testers, refactor, follow-up rounds, fixtures and evals | |
 
 ## Manual sandbox testing
 

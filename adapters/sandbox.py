@@ -18,8 +18,8 @@ MASTER_DB = "app_master"      # the clean seeded copy that reset() clones from
 # Runs inside the api container. Prints one JSON line; status 0 means "no response".
 _REQUEST = """
 import json, sys, urllib.error, urllib.parse, urllib.request
-method, url, kind, payload = sys.argv[1:5]
-body, headers = None, {}
+method, url, kind, payload, extra = sys.argv[1:6]
+body, headers = None, json.loads(extra)
 if kind == "form":
     body = urllib.parse.urlencode(json.loads(payload)).encode()
     headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -56,6 +56,7 @@ class Sandbox:
                  project: str = "chaos_target", env: dict[str, str] | None = None):
         self.api = api_service
         self.db = db_service
+        self.project = project
         self._base = ["docker", "compose", "-p", project, "-f", str(compose_file)]
         self._env = {**os.environ, **(env or {})}     # e.g. the cpu limits from the manifest
 
@@ -76,6 +77,22 @@ class Sandbox:
     def down(self) -> None:
         self._run("down", "-v", "--remove-orphans")
 
+    def container_name(self, service: str) -> str:
+        """Compose v2 names containers <project>-<service>-1."""
+        return f"{self.project}-{service}-1"
+
+    def run_tool(self, service: str, *args: str, mount: Path, name: str, timeout: int) -> subprocess.CompletedProcess:
+        """Run a one-off tool container (e.g. the load generator) on the sandbox network, with `mount`
+        available inside at /work. The exit code is returned, not raised: the caller knows what it means."""
+        # Docker treats a relative path as a named volume, so the host folder must be absolute.
+        cmd = [*self._base, "run", "--rm", "-T", "--name", name, "-v", f"{Path(mount).resolve()}:/work", service, *args]
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                  timeout=timeout, env=self._env)
+        except subprocess.TimeoutExpired:
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True)    # don't leave it loading the machine
+            raise SandboxError(f"{service} did not finish within {timeout}s and was stopped") from None
+
     # --- running things inside --------------------------------------------
     def exec(self, service: str, *cmd: str, timeout: int = 300, stdin: str | None = None) -> str:
         return self._run("exec", "-T", service, *cmd, timeout=timeout, stdin=stdin)
@@ -88,12 +105,12 @@ class Sandbox:
         return self.exec(self.db, "psql", "-U", DB_USER, "-d", db,
                          "-v", "ON_ERROR_STOP=1", "-tA", "-c", sql)
 
-    def request(self, method: str, url: str, *, form: dict | None = None,
-                json_body: dict | None = None) -> tuple[int, str]:
+    def request(self, method: str, url: str, *, form: dict | None = None, json_body: dict | None = None,
+                headers: dict | None = None) -> tuple[int, str]:
         """HTTP call made from inside the sandbox. Returns (status, body); status 0 = no response."""
         kind, payload = ("form", form) if form is not None else \
                         ("json", json_body) if json_body is not None else ("none", None)
-        out = self.python(_REQUEST, method, url, kind, json.dumps(payload))
+        out = self.python(_REQUEST, method, url, kind, json.dumps(payload), json.dumps(headers or {}))
         try:
             reply = json.loads(out.strip().splitlines()[-1])
             return int(reply["status"]), str(reply["body"])

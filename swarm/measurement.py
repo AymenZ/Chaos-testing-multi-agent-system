@@ -17,3 +17,6 @@ class Measurement(Strict):
     dropped_iterations: int = Field(0, ge=0)
     loadgen_cpu_max_pct: float | None = None   # the validator reads these two
     host_cpu_max_pct: float | None = None
+    aborted: bool = False                      # the run was stopped early because errors passed the card's limit
+    abort_reason: str | None = None
+    signals: dict[str, float] = {}             # peak value per catalog signal (brief.Signal) seen during the run
