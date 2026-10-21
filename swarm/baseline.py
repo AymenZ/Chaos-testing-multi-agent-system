@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from statistics import median
 from typing import Literal
 
-from swarm.manifest import RuleSet
+from swarm.manifest import Limits, RuleSet
 from swarm.measurement import Measurement
 
 NOISY_SPREAD = 0.30     # starting guess: repeats differing by over 30% means too noisy
@@ -72,3 +72,67 @@ def find_knee(steps: list[Measurement], base: BaselineSummary, rules: RuleSet) -
         else:
             return Capacity("found", last_good, s.target_rps)
     return Capacity("not_reached", last_good, None)               # ramp ended too low
+
+
+# --- is the capacity number usable? -------------------------------------------------------------
+
+MIN_USEFUL_MULTIPLE = 1.2   # starting guess: below this the limits leave no room to stress past capacity
+AT_LIMIT = 0.95             # a ramp that reached 95% of max_rps has hit the manifest's ceiling
+
+
+@dataclass(frozen=True)
+class CapacityContext:
+    """All the request tester gets to know about capacity. It never sees raw ramp results."""
+    rps: float
+    kind: Literal["exact", "lower_bound"]
+    max_multiple: float        # the most load, as a multiple of rps, the manifest limits allow
+
+
+@dataclass(frozen=True)
+class CapacityCheck:
+    """The graph routes on `outcome`. ok / lower_bound: continue. retry: rerun the baseline or ramp.
+    unfit: stop, could not test. cannot_sustain: stop, and report it as a finding."""
+    outcome: Literal["ok", "lower_bound", "retry", "unfit", "cannot_sustain"]
+    reason: str
+    context: CapacityContext | None = None
+    noisy: bool = False        # flagged, not blocking: results inside the noise band stay inconclusive
+
+
+def ramp_rates(normal_rps: float, factor: float, max_rps: float) -> list[float]:
+    """Request rates for the capacity ramp: usual traffic, then ever larger steps, ending at the limit."""
+    rates, r = [], normal_rps
+    while r < max_rps:
+        rates.append(round(r, 2))
+        r *= factor
+    if rates and max_rps - rates[-1] < (1 - AT_LIMIT) * max_rps:     # a step this close to the limit is the limit
+        rates.pop()
+    return [*rates, max_rps]
+
+
+def check_capacity(base: BaselineSummary, cap: Capacity, limits: Limits, normal_rps: float,
+                   retried: bool = False) -> CapacityCheck:
+    """Deterministic gate between Baseline and the tester. `retried` says the baseline or ramp already
+    ran twice. The ramp starts at normal_rps (usual traffic), so an unhealthy first step is a finding."""
+    def again(reason: str) -> CapacityCheck:
+        return CapacityCheck("unfit" if retried else "retry", reason, noisy=base.noisy)
+
+    if base.low_samples:
+        return again("baseline runs had too few requests for a reliable p95")
+    if cap.status == "below_start" or not cap.rps:
+        return CapacityCheck("cannot_sustain", f"even usual traffic ({normal_rps:g} rps) was unhealthy: "
+                             "the backend cannot sustain its normal load in this sandbox", noisy=base.noisy)
+
+    kind: Literal["exact", "lower_bound"] = "exact"
+    reason = f"capacity found at {cap.rps:.0f} rps"
+    if cap.status == "not_reached":
+        if cap.rps < AT_LIMIT * limits.max_rps and not retried:
+            return again("every step was healthy but the ramp ended below max_rps: the ramp was too short")
+        kind = "lower_bound"
+        reason = f"every ramp step was healthy: capacity is at least {cap.rps:.0f} rps"
+
+    max_multiple = limits.max_rps / cap.rps
+    if max_multiple < MIN_USEFUL_MULTIPLE:
+        return CapacityCheck("unfit", f"capacity ({cap.rps:.0f} rps) leaves no headroom under max_rps "
+                             f"({limits.max_rps}): raise the limit to test past it", noisy=base.noisy)
+    return CapacityCheck("ok" if kind == "exact" else "lower_bound", reason,
+                         CapacityContext(cap.rps, kind, round(max_multiple, 2)), base.noisy)

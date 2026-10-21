@@ -37,6 +37,8 @@ baseline:
   repeats: 5
   warmup_s: 15
   measure_s: 60
+  normal_rps: 20                     # what we call usual traffic for this backend (a stand-in): baseline runs here
+  ramp_step_factor: 2.0              # capacity ramp: 20, 40, 80, ... up to limits.max_rps
 
 resources:
   api_cpus: 1
@@ -50,7 +52,9 @@ budgets:
   wall_clock_s: 5400
   max_llm_calls: 20
 llm:
-  planner_model: claude-opus-5-5     # your main cost lever; swap to claude-sonnet-5-5 to cut cost, then re-check brief quality
+  planner_model: claude-sonnet-5-5     # your main cost lever; swap to claude-sonnet-5-5 to cut cost, then re-check brief quality
   effort: medium
   max_tokens: 16000                  # per model call
   planner_max_steps: 12              # model calls the planner may spend; must be <= budgets.max_llm_calls
+  tester_model: claude-sonnet-5-5
+  tester_max_calls: 2                # first attempt + one repair when its cards are rejected
