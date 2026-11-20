@@ -11,9 +11,9 @@ A **multi-agent system** that tries to break a web backend on purpose, inside a 
 An agent never measures and never grades its own work. Nodes share one state and are wired as a graph (LangGraph) with retry loops, human approval gates, and hard budgets so it always stops.
 
 ---
-## v1 graph (target)
+## v1 graph (built)
 
-The smallest version that is still a real multi-agent system with LLMs: two agents, one experiment type (a burst of requests), no refactoring. Every run ends in **pass**, **fail**, or **could not test**.
+The smallest version that is still a real multi-agent system with LLMs: two agents, one experiment type (a burst of requests), no refactoring. Every experiment ends in **pass**, **fail**, **inconclusive** or **could not test**. The graph is `swarm/graph.py` (LangGraph) over the shared state in `swarm/state.py`; any early failure goes straight to the report.
 
 ```mermaid
 flowchart TD
@@ -22,34 +22,50 @@ flowchart TD
     C --> D["Baseline"]
     D --> E["Request tester agent"]
     E --> F["Guardrail"]
-    F --> G["Runner"]
+    F --> P["Pick next experiment"]
+    P -->|"one is waiting"| G["Runner"]
+    P -->|"cards to revise"| E
+    P -->|"nothing left, or a budget ran out"| R["Report"]
     G --> H["Validator"]
     H -->|"setup problem, retries left"| G
-    H -->|"bad design, retries left"| E
-    H -->|"retries used up"| R["Report"]
+    H -->|"bad design"| P
+    H -->|"retries used up"| P
     H -->|"fair"| I["Verdict"]
-    I --> R
+    I --> P
 
     classDef agent fill:#cfe2ff,stroke:#0d6efd,color:#000
     classDef code fill:#e9ecef,stroke:#6c757d,color:#000
     class C,E agent
-    class A,B,D,F,G,H,I,R code
+    class A,B,D,F,P,G,H,I,R code
 ```
+
+A design flaw is recorded as feedback and `Pick` sends it back to the tester (up to `max_attempts - 1` revisions per card). Confirmation runs for a clear fail (one repeat) or a borderline result (median of three) happen inside the Verdict node.
 
 | Node | v1 scope | Status |
 |---|---|---|
 | Manifest | The rulebook for the login backend: limits, rules, login details, budgets, model settings, code location | **built, tested** |
 | Preflight | Start the sandbox, prove it has no internet, seed data, check login, save a clean copy | **built, ran on real Docker** |
-| Planner | An agent that explores the code with read-only tools, calls the API and database fact tools itself, and writes one brief. Claims without a verifiable quote are dropped | **built, tested with a fake model; not yet run on a real one** |
-| Baseline | Runs at `normal_rps` (what the manifest calls usual traffic) several times for the normal speed and its wobble, then ramps up from there (doubling by default) to find where the backend starts to struggle (its capacity). If even usual traffic is unhealthy, that is reported as a finding. The tester asks for load as a multiple of capacity | maths and the capacity-usability check built; needs the runner to measure |
-| Request tester | One structured model call (with repairs) that turns the brief and measured capacity into a few experiment cards. Load is a multiple of capacity; it accepts Validator feedback to revise a card | **built, tested with a fake model; not yet run on a real one** |
-| Guardrail | Turns each card into exact numbers: clamps load and duration to the manifest limits (and records it), rejects unrunnable cards, enforces the experiment budget, double-checks the target host | **built, tested** |
-| Runner | Reset, one smoke request, then k6 (a one-off container on the sandbox network) sends the load; reads k6's summary and adds machine peaks | **built, tested against fakes; not yet run against real k6** |
-| Validator | Fair test? Technical flaw (our machine saturated, no numbers) means rerun the same card; design flaw (a pile of refused requests) means send it back to the tester | **built, tested** |
-| Verdict | Pass / fail / inconclusive against the baseline and its usual range. A pass needs the card's expected signals to have appeared (else a weak pass, reported as inconclusive). p95 is judged up to measured capacity; above it the error rate and early abort decide | **built, tested** |
-| Report | Per experiment: pass / fail / inconclusive / could not test, with numbers, plus an overall label (clean, incomplete, findings, not run) and what was **not** covered. Markdown and JSON | **built, tested** |
+| Planner | An agent that explores the code with read-only tools, calls the API and database fact tools itself, and writes one brief. Claims without a verifiable quote are dropped | **ran live** (Gemini 3.5 Flash-Lite, about 10 calls) |
+| Baseline | Runs at `normal_rps` (what the manifest calls usual traffic) several times for the normal speed and its wobble, then ramps up from there (x3 by default) to find where the backend starts to struggle (its capacity). If even usual traffic is unhealthy, that is reported as a finding. The tester asks for load as a multiple of capacity | **ran live** (about 5 minutes) |
+| Request tester | One structured model call (with repairs) that turns the brief and measured capacity into a few experiment cards. Load is a multiple of capacity; it accepts Validator feedback to revise a card | **ran live** (1 call) |
+| Guardrail | Turns each card into exact numbers: clamps load and duration to the manifest limits (and records it), rejects unrunnable cards, enforces the experiment budget, double-checks the target host | **ran live** |
+| Runner | Reset, one smoke request, then k6 (a one-off container on the sandbox network) sends the load; reads k6's summary and adds machine peaks | **ran live** against real k6 |
+| Validator | Fair test? Technical flaw (our machine saturated, no numbers) means rerun the same card; design flaw (a pile of refused requests) means send it back to the tester | **ran live**, but only the "fair" branch; retry and redesign are unit-tested only |
+| Verdict | Pass / fail / inconclusive against the baseline and its usual range. A pass needs the card's expected signals to have appeared (else a weak pass, reported as inconclusive). p95 is judged up to measured capacity; above it the error rate and early abort decide | **ran live**; borderline (median of three) path unit-tested only |
+| Report | Per experiment: pass / fail / inconclusive / could not test, with numbers, plus an overall label (clean, incomplete, findings, not run) and what was **not** covered. Markdown and JSON | **ran live** |
 
 Out of v1: scheduler, explainer, human gates, database and failure testers, refactor, follow-up rounds.
+
+### Where v1 stands
+
+It runs end to end (about 8 minutes with the trimmed baseline) and the two findings from the first full run are leads, not verdicts. Known gaps, in the order to fix them:
+
+1. **Capacity is measured on one endpoint** and shared by every experiment, so "5x capacity" is not meaningful for an endpoint that costs far more than the baseline one. Plan: measure capacity per tested endpoint, after the tester picks it.
+2. **The p95 rule can undercount fast endpoints** (5 ms to 35 ms counts as 7x slower). Needs an absolute floor.
+3. **One extreme load per experiment** shows that something collapses, not where it starts to degrade.
+4. **Thin coverage:** the tester wrote 2 cards for 11 endpoints.
+5. **The report leaves out the sampled signals** (API CPU, database CPU, connections) that support each finding.
+6. **Safety nets not yet seen live:** design-flaw redesign, technical retry, median of three, baseline `retry`, `cannot_sustain`, budget truncation. Plan: provoke each with a deliberately awkward setup (for example wrong credentials, a tiny CPU limit, a short wall clock).
 
 ## Goal graph (later)
 
@@ -124,14 +140,14 @@ flowchart TD
 
 | Folder | What |
 |---|---|
-| `swarm/` | The product. So far: manifest, preflight, baseline maths, the planner and its checks. `swarm/k6/script.js` is the one fixed load script every run uses. `swarm/tools/` holds what the planner uses: the jailed code reader, the API summary and the database schema reader |
-| `adapters/` | Glue to the outside world: the Docker sandbox wrapper and the database seeder |
+| `swarm/` | The product: `graph.py` and `state.py` (the wiring), plus one module per node (manifest, preflight, planner, calibration for the baseline, tester, guardrail, runner, validator, verdict, report). `swarm/k6/script.js` is the one fixed load script every run uses. `swarm/tools/` holds what the planner uses: the jailed code reader, the API summary and the database schema reader. `harness.py` is an older stand-in for the graph's retry routing, kept for `run_experiments.py` |
+| `adapters/` | Glue to the outside world: the Docker sandbox wrapper, the database seeder, machine metrics, and the Gemini client |
 | `manifests/` | One rulebook per target |
 | `fixtures/` | `deployment_audit/` is the sandbox definition (compose files, Dockerfile, debug forwarder). Practice backends with planted bugs are not built yet |
-| `scripts/` | Run a piece on its own: `run_planner.py`, `run_load.py` (one load plan against the live sandbox) |
+| `scripts/` | `run_graph.py` runs everything; the others run one piece on its own (see below) |
 | `evals/` | Scoreboard for the agents against fixtures. Empty |
-| `runs/` | Output of each run: briefs, measurements, audit log. Git-ignored |
-| `tests/` | 222 unit tests. `tests/data/` holds a real API description and database schema from the target |
+| `runs/` | Output of each run: briefs, measurements, audit log, report. Git-ignored |
+| `tests/` | 250 unit tests, using scripted fakes for the model, Docker and k6. `tests/data/` holds a real API description and database schema from the target |
 
 ## Prerequisites
 
@@ -142,13 +158,13 @@ Python 3.12, Git, WSL2 and Docker Desktop (installed; runs the sandbox). A Gemin
 | Step | What | Status |
 |---|---|---|
 | Manifest, sandbox, preflight | The environment | **done** |
-| Baseline maths | Summary and capacity from measurements | **done** (needs the runner to feed it) |
-| Planner agent | Explores the target, writes the brief | **done**, awaiting its first real-model run |
-| Request tester | Turns a brief into experiment cards | **done**, awaiting its first real-model run |
-| Guardrail, Runner | Resolve cards into exact experiments; send the load | **done**; Runner awaiting its first real k6 run |
-| Validator, Verdict, Report | The remaining deterministic nodes | **done** |
-| Baseline node, graph and state | Measure the baseline and capacity with the runner; wire everything together | you |
-| Graph and state | Wiring the nodes together | you |
+| Baseline | Summary and capacity, measured with the runner | **done**, ran live |
+| Planner agent | Explores the target, writes the brief | **done**, ran live |
+| Request tester | Turns a brief into experiment cards | **done**, ran live |
+| Guardrail, Runner | Resolve cards into exact experiments; send the load | **done**, ran live |
+| Validator, Verdict, Report | The remaining deterministic nodes | **done**, ran live (clean path) |
+| Graph and state | Wiring the nodes together | **done**, ran end to end |
+| Next | The gaps listed under "Where v1 stands" | |
 | Later | Scheduler, explainer, database and failure testers, refactor, follow-up rounds, fixtures and evals | |
 
 ## Manual sandbox testing
@@ -194,17 +210,23 @@ Open <http://127.0.0.1:8000/docs> and use **Authorize**: `user0@example.com` / `
 
     .venv\Scripts\python -c "from swarm.manifest import load_manifest; from swarm.preflight import make_sandbox; make_sandbox(load_manifest('manifests/deployment_audit.yaml')).down()"
 
-## A real run, step by step
-
-Each script runs one part of the pipeline for real and saves its output under `runs/`, so the next script picks up the newest result. Docker Desktop must be running. The graph will eventually replace this manual chain.
+## A real run
 
 **One-time setup:** paste a key into `.env` (`GEMINI_API_KEY` for the default provider, from <https://aistudio.google.com/apikey>). The provider, model names and request pacing live in the manifest's `llm` section. Check the model IDs and limits in the manifest against Google AI Studio.
+
+**The whole graph, one command** (Docker Desktop running; about 8 to 20 minutes depending on the backend; writes everything to `runs/graph_<time>/`):
+
+    .venv\Scripts\python scripts/run_graph.py
+
+Preflight is safe to repeat: it empties the users table, reseeds and replaces the clean copy. For a fully fresh start (a run was killed midway, or you changed the compose file or Dockerfile), run `docker compose -f fixtures/deployment_audit/docker-compose.yml down -v` first.
+
+**Piece by piece.** Each script runs one part of the pipeline for real and saves its output under `runs/`, so the next script picks up the newest result.
 
 | Step | Command | What it does | LLM calls |
 |---|---|---|---|
 | 1 | Launch the sandbox (see "Manual sandbox testing") | Start the stack, seed it, save the clean copy | 0 |
 | 2 | `python scripts/run_planner.py` | Planner explores the code and API, writes `brief.json` | up to 12 |
-| 3 | `python scripts/run_baseline.py` | Measures normal speed at `normal_rps`, then ramps up to find capacity (about 15 to 20 minutes) | 0 |
+| 3 | `python scripts/run_baseline.py` | Measures normal speed at `normal_rps`, then ramps up to find capacity (about 4 to 8 minutes with the trimmed settings) | 0 |
 | 4 | `python scripts/run_tester.py` | Tester designs cards from the brief and the measured capacity; the Guardrail resolves them | up to 2 |
 | 5 | `python scripts/run_experiments.py` | Runs every experiment, validates, judges, writes `report.md` and `report.json` | 0 |
 
