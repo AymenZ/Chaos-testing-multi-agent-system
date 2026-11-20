@@ -22,7 +22,9 @@ class SwarmState(TypedDict, total=False):
     started_at: float                 # monotonic clock, for the wall-clock budget
     preflight: PreflightResult
     brief: Brief
-    baseline: BaselineRun
+    baseline: BaselineRun             # usual traffic on the planner's baseline endpoint
+    calibrations: dict[str, BaselineRun]   # normal speed and capacity of every endpoint measured so far
+    uncalibrated: dict[str, str]      # endpoints that could not be measured, and why
     error: str                        # why the run stopped early (agent or calibration failure)
     truncated: bool                   # a budget cut the run short
     report: Report

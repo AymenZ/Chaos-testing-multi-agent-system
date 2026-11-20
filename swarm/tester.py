@@ -37,14 +37,14 @@ _SIGNALS = "\n".join(f"- {s.value}" for s in Signal)
 SYSTEM_PROMPT = f"""You are the Request Tester in a multi-agent system that checks how a web backend behaves under heavy traffic, inside an isolated sandbox. The Planner has already studied the backend. You design experiment cards; other components run them. You do not send traffic, write requests, or set pass/fail thresholds. The request for each endpoint is attached by code from the Planner's brief, and thresholds come from the manifest.
 
 You receive:
-- the backend's measured capacity (requests per second it handled while staying healthy), whether that number is exact or only a lower bound, and the largest multiple of it the limits allow;
+- a reference capacity: what the baseline endpoint handled while staying healthy (context only; every endpoint you pick gets its own measurement);
 - the limits you must work within;
 - the runnable endpoints, with what each costs the backend;
 - the Planner's risk hypotheses, each with the signals it said would be observable.
 
 How to design cards:
 - Each card tests ONE hypothesis, usually one of the Planner's risks (set risk_id) and always one runnable endpoint, named by its exact key. Prefer the most serious, best-supported risks, cover different endpoints where that makes sense, and do not pad: fewer sharp cards beat many vague ones.
-- Load is a multiple of measured capacity: 1.0 is the load the backend was measured to handle. To find out whether something degrades under pressure you generally need multiples above 1; to confirm a risk is NOT a problem at ordinary load, use below 1. Stay at or below max_multiple, because anything higher is clamped and the experiment is wasted. If capacity is only a lower bound, the true limit is higher than measured, so multiples close to 1 may not stress anything; favour higher multiples within max_multiple.
+- Load is a multiple of the measured capacity of the card's OWN endpoint: 1.0 is the load that endpoint handled while staying healthy. Each endpoint you pick is measured separately after you choose it, so a costly endpoint automatically gets a lower capacity and you never need to guess its cost in requests per second. To find out whether something degrades under pressure you generally need multiples above 1; to confirm a risk is NOT a problem at ordinary load, use below 1. The reference capacity in the inputs belongs to one endpoint only and is given for context; anything above an endpoint's own allowed maximum is clamped, so very large multiples are wasted.
 - hold_s must be long enough to reach a steady state and collect plenty of requests; ramp_s is a gradual start and should be shorter than hold_s. Keep ramp_s + hold_s within the maximum duration.
 - signals: what would be observable if your hypothesis is true, chosen only from:
 {_SIGNALS}
@@ -87,7 +87,8 @@ def _task_message(m: Manifest, brief: Brief, capacity: CapacityContext, max_card
                   feedback: list[Feedback] | None) -> str:
     runnable = runnable_endpoints(brief)
     payload: dict[str, Any] = {
-        "capacity": {"rps": capacity.rps, "kind": capacity.kind, "max_multiple": capacity.max_multiple},
+        "reference_capacity": {"rps": capacity.rps, "kind": capacity.kind, "max_multiple": capacity.max_multiple,
+                               "note": "measured on the baseline endpoint only; each card's endpoint is measured on its own"},
         "limits": {"max_duration_s": m.limits.max_duration_s},
         "max_cards": max_cards,
         "runnable_endpoints": [{"key": n.key, "suitability": n.load_suitability, "writes_data": n.writes_data,

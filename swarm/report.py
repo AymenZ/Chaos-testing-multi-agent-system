@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from swarm.baseline import BaselineSummary, CapacityCheck
 from swarm.brief import Brief
+from swarm.calibration import BaselineRun
 from swarm.guardrail import Experiment, Rejection
 from swarm.manifest import Strict
 from swarm.measurement import Measurement
@@ -49,6 +50,7 @@ class Report(Strict):
     environment: dict[str, Any]
     baseline: dict[str, Any] | None
     capacity: dict[str, Any] | None
+    endpoints: dict[str, dict[str, Any]] = {}     # each measured endpoint's normal speed and capacity
     results: list[ExperimentResult]
     findings: list[str]
     not_covered: list[str]
@@ -62,11 +64,15 @@ def _count(results: list[ExperimentResult], outcome: str) -> int:
 def build_report(*, preflight: PreflightResult | None = None, brief: Brief | None = None,
                  baseline: BaselineSummary | None = None, capacity: CapacityCheck | None = None,
                  results: list[ExperimentResult] | None = None, rejected: list[Rejection] | None = None,
-                 truncated: bool = False) -> Report:
-    results, rejected = results or [], rejected or []
-    findings = [f"{r.experiment.id}: {r.experiment.endpoint} at {r.experiment.load_multiple:g}x capacity "
+                 truncated: bool = False, calibrations: dict[str, BaselineRun] | None = None) -> Report:
+    results, rejected, calibrations = results or [], rejected or [], calibrations or {}
+    findings = [f"{r.experiment.id}: {r.experiment.endpoint} at {r.experiment.load_multiple:g}x its capacity "
                 f"({r.experiment.target_rps:.0f} rps): " + "; ".join(r.reasons)
                 for r in results if r.outcome == "fail"]
+    # An endpoint that cannot hold usual traffic is a finding on its own (the baseline endpoint's case
+    # is reported through `capacity` below, so it is not repeated here).
+    findings += [f"{key}: {run.check.reason}" for key, run in calibrations.items()
+                 if run.check.outcome == "cannot_sustain" and run.check is not capacity]
 
     # --- the overall label -------------------------------------------------------------
     if preflight is not None and not preflight.ok:
@@ -76,6 +82,8 @@ def build_report(*, preflight: PreflightResult | None = None, brief: Brief | Non
         findings.insert(0, capacity.reason)
     elif capacity is not None and capacity.outcome in ("unfit", "retry"):
         label, headline = "not_run", f"Not run: capacity could not be measured: {capacity.reason}"
+    elif not results and findings:
+        label, headline = "findings", f"Finding: {findings[0]}"
     elif not results:
         label, headline = "not_run", "No experiment was run"
     else:
@@ -126,6 +134,10 @@ def build_report(*, preflight: PreflightResult | None = None, brief: Brief | Non
         capacity=None if capacity is None else (
             {"rps": capacity.context.rps, "kind": capacity.context.kind, "max_multiple": capacity.context.max_multiple}
             if capacity.context else {"outcome": capacity.outcome, "reason": capacity.reason}),
+        endpoints={key: {"p95_median_ms": run.summary.p95_median_ms, "outcome": run.check.outcome,
+                         "capacity_rps": run.check.context.rps if run.check.context else None,
+                         "kind": run.check.context.kind if run.check.context else None, "reason": run.check.reason}
+                   for key, run in calibrations.items()},
         results=results, findings=findings, not_covered=not_covered, notes=notes)
 
 
@@ -134,7 +146,7 @@ def build_report(*, preflight: PreflightResult | None = None, brief: Brief | Non
 def _row(r: ExperimentResult, base_p95: float | None) -> str:
     e, m = r.experiment, r.measurement
     outcome = r.outcome.replace("_", " ") + (" (weak)" if r.weak_pass else "")
-    load = f"{e.load_multiple:g}x ({e.target_rps:.0f} rps)"
+    load = f"{e.load_multiple:g}x its capacity ({e.target_rps:.0f} rps)"
     if m is None:
         return f"| {e.id} | {e.endpoint} | {load} | {outcome} | - | - | - |"
     p95 = f"{m.p95_ms:.0f} ms" + (f" ({m.p95_ms / base_p95:.1f}x)" if base_p95 else "")
@@ -156,10 +168,20 @@ def render_markdown(report: Report) -> str:
             out.append(f"- Capacity: {'at least ' if c['kind'] == 'lower_bound' else ''}{c['rps']:.0f} rps; the limits allow up to {c['max_multiple']}x"
                        if "rps" in c else f"- Capacity: {c['reason']}")
         out.append("")
+    if report.endpoints:
+        out += ["## Capacity per endpoint", "", "| endpoint | normal p95 | capacity |", "|---|---|---|"]
+        for key, e in report.endpoints.items():
+            cap = (f"{'at least ' if e['kind'] == 'lower_bound' else ''}{e['capacity_rps']:.0f} rps"
+                   if e["capacity_rps"] else e["reason"])
+            out.append(f"| {key} | {e['p95_median_ms']:.0f} ms | {cap} |")
+        out.append("")
     if report.results:
-        base_p95 = report.baseline["p95_median_ms"] if report.baseline else None
-        out += ["## Experiments", "", "| id | endpoint | load | outcome | p95 (vs baseline) | errors | delivered |",
-                "|---|---|---|---|---|---|---|", *[_row(r, base_p95) for r in report.results], ""]
+        default_p95 = report.baseline["p95_median_ms"] if report.baseline else None
+
+        def own_p95(r: ExperimentResult) -> float | None:     # compared with its own endpoint's normal speed
+            return report.endpoints.get(r.experiment.endpoint, {}).get("p95_median_ms", default_p95)
+        out += ["## Experiments", "", "| id | endpoint | load | outcome | p95 (vs its normal) | errors | delivered |",
+                "|---|---|---|---|---|---|---|", *[_row(r, own_p95(r)) for r in report.results], ""]
         for r in report.results:
             adj = r.experiment.adjustments
             out.append(f"- **{r.experiment.id}**: {r.experiment.hypothesis}" + (f" _(adjusted: {'; '.join(adj)})_" if adj else ""))

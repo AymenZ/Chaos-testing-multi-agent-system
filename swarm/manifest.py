@@ -66,6 +66,7 @@ class Limits(Strict):
 
 class RuleSet(Strict):
     p95_vs_baseline_max: float = Field(gt=1)
+    p95_floor_ms: float = Field(default=50, ge=0)    # a p95 at or under this is never "slower", whatever the ratio
     error_rate_max: float = Field(ge=0, le=1)
     recovery_max_s: float = Field(gt=0)
 

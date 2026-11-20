@@ -40,14 +40,15 @@ def summarize_baseline(runs: list[Measurement]) -> BaselineSummary:
     )
 
 
-def clearly_slower(p95_ms: float, base: BaselineSummary, ratio: float) -> bool:
-    """Worse than 'ratio' times normal AND outside everything the baseline ever showed."""
-    return p95_ms > ratio * base.p95_median_ms and p95_ms > base.p95_max_ms
+def clearly_slower(p95_ms: float, base: BaselineSummary, ratio: float, floor_ms: float = 0.0) -> bool:
+    """Worse than 'ratio' times normal AND outside everything the baseline ever showed AND above the
+    floor. The floor stops a very fast endpoint (5 ms -> 35 ms) from counting as 'slower'."""
+    return p95_ms > ratio * base.p95_median_ms and p95_ms > base.p95_max_ms and p95_ms > floor_ms
 
 
 def step_healthy(step: Measurement, base: BaselineSummary, rules: RuleSet) -> bool:
     return (
-        not clearly_slower(step.p95_ms, base, rules.p95_vs_baseline_max)
+        not clearly_slower(step.p95_ms, base, rules.p95_vs_baseline_max, rules.p95_floor_ms)
         and step.error_rate <= rules.error_rate_max
         and step.achieved_rps >= MIN_ACHIEVED * step.target_rps
     )

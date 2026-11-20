@@ -1,8 +1,11 @@
 # swarm/calibration.py
-"""The Baseline node's real work: measure normal behaviour, then find capacity. Plain code.
+"""Measure one endpoint's normal behaviour, then find its capacity. Plain code.
 
-1. Run the planner's baseline endpoint at `normal_rps` several times (resetting the database before
-   each) -> normal speed and its usual wobble.
+Used twice: by the Baseline node on the planner's baseline endpoint, and by the Calibrate node on
+every endpoint the tester picks, so each experiment is sized against its own endpoint.
+
+1. Run the endpoint at `normal_rps` several times (resetting the database before each) -> normal
+   speed and its usual wobble.
 2. Ramp up from there (normal_rps, x factor, ... up to the limit) and stop at the first unhealthy step
    -> capacity.
 3. Ask check_capacity whether that number is usable.
@@ -12,7 +15,8 @@ code serves the live sandbox. Each measured run must pass the Validator; a techn
 to the manifest's attempt limit, anything else stops calibration with the reasons.
 """
 import json
-from dataclasses import asdict, dataclass
+import re
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace as NS
 from typing import Callable
@@ -40,6 +44,7 @@ class BaselineRun:
     capacity: Capacity
     steps: list[Measurement]
     check: CapacityCheck
+    endpoint: str = ""
 
 
 def baseline_target(brief: Brief, health_path: str = "/health") -> tuple[str, EndpointNote]:
@@ -50,6 +55,13 @@ def baseline_target(brief: Brief, health_path: str = "/health") -> tuple[str, En
         if key in notes and notes[key].recipe is not None and key.split(" ", 1)[1] != health_path:
             return key, notes[key]
     raise CalibrationError("the brief has no usable baseline target (the health check does not count)")
+
+
+def endpoint_note(brief: Brief, key: str) -> EndpointNote:
+    note = next((n for n in brief.output.endpoints if n.key == key), None)
+    if note is None or note.recipe is None:
+        raise CalibrationError(f"{key}: no recipe in the brief, so it cannot be measured")
+    return note
 
 
 def make_plan(m: Manifest, key: str, note: EndpointNote, rps: float) -> LoadPlan:
@@ -76,32 +88,48 @@ def _measure(m: Manifest, plan: LoadPlan, name: str, load: LoadFn, reset: Callab
 
 
 def measure_baseline(m: Manifest, brief: Brief, load: LoadFn, reset: Callable[[], None],
-                     progress: Callable[[str], None] = lambda _: None) -> BaselineRun:
-    key, note = baseline_target(brief, m.target.health_path)
+                     progress: Callable[[str], None] = lambda _: None, key: str | None = None) -> BaselineRun:
+    """Measure `key`, or the planner's baseline endpoint when no key is given."""
+    key, note = (key, endpoint_note(brief, key)) if key else baseline_target(brief, m.target.health_path)
     rules = m.rules.default
 
     runs = []
     for i in range(1, m.baseline.repeats + 1):
         progress(f"baseline run {i}/{m.baseline.repeats} at {m.baseline.normal_rps:g} rps on {key}")
-        runs.append(_measure(m, make_plan(m, key, note, m.baseline.normal_rps), f"baseline-{i}", load, reset))
+        runs.append(_measure(m, make_plan(m, key, note, m.baseline.normal_rps), f"{slug(key)}-baseline-{i}", load, reset))
     summary = summarize_baseline(runs)
 
     steps: list[Measurement] = []
     for rate in ramp_rates(m.baseline.normal_rps, m.baseline.ramp_step_factor, m.limits.max_rps):
-        progress(f"ramp step at {rate:g} rps")
-        step = _measure(m, make_plan(m, key, note, rate), f"ramp-{rate:g}", load, reset)
+        progress(f"ramp step at {rate:g} rps on {key}")
+        step = _measure(m, make_plan(m, key, note, rate), f"{slug(key)}-ramp-{rate:g}", load, reset)
         steps.append(step)
         if not step_healthy(step, summary, rules):
             break                                         # the first unhealthy step is all find_knee needs
     capacity = find_knee(steps, summary, rules)
     check = check_capacity(summary, capacity, m.limits, m.baseline.normal_rps)
-    return BaselineRun(summary, runs, capacity, steps, check)
+    return BaselineRun(summary, runs, capacity, steps, check, key)
+
+
+def calibrate(m: Manifest, brief: Brief, load: LoadFn, reset: Callable[[], None],
+              progress: Callable[[str], None] = lambda _: None, key: str | None = None) -> BaselineRun:
+    """measure_baseline, plus the one second go that check_capacity may ask for."""
+    run = measure_baseline(m, brief, load, reset, progress, key)
+    if run.check.outcome == "retry":
+        progress(f"{run.endpoint}: the capacity check asked for another go ({run.check.reason})")
+        run = measure_baseline(m, brief, load, reset, progress, run.endpoint)
+        run = replace(run, check=check_capacity(run.summary, run.capacity, m.limits, m.baseline.normal_rps, retried=True))
+    return run
+
+
+def slug(key: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")       # 'GET /api/me' -> 'get-api-me'
 
 
 # --- saving and loading what the later nodes need -------------------------------------------------
 
 def save_baseline(run: BaselineRun, path: Path) -> None:
-    data = {"summary": asdict(run.summary), "capacity": asdict(run.capacity), "check": asdict(run.check),
+    data = {"endpoint": run.endpoint, "summary": asdict(run.summary), "capacity": asdict(run.capacity), "check": asdict(run.check),
             "runs": [r.model_dump(mode="json") for r in run.runs], "steps": [s.model_dump(mode="json") for s in run.steps]}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")

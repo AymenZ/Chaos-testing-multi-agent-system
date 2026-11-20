@@ -85,11 +85,12 @@ def judge(exp: Experiment, meas: Measurement, base: BaselineSummary, rules: Rule
     borderline |= _near(meas.error_rate, err_limit)
 
     if exp.load_multiple <= 1.0:
-        rel_limit = rules.p95_vs_baseline_max * base.p95_median_ms
-        if clearly_slower(meas.p95_ms, base, rules.p95_vs_baseline_max):
+        rel_limit = max(rules.p95_vs_baseline_max * base.p95_median_ms, rules.p95_floor_ms)
+        if clearly_slower(meas.p95_ms, base, rules.p95_vs_baseline_max, rules.p95_floor_ms):
             failed = True
             reasons.append(f"p95 {meas.p95_ms:.0f} ms is more than {rules.p95_vs_baseline_max}x the baseline "
-                           f"({base.p95_median_ms:.0f} ms) and outside its usual range (up to {base.p95_max_ms:.0f} ms)")
+                           f"({base.p95_median_ms:.0f} ms), outside its usual range (up to {base.p95_max_ms:.0f} ms) "
+                           f"and above the {rules.p95_floor_ms:g} ms floor")
         elif meas.p95_ms > rel_limit:
             noise_blocked = True
             reasons.append(f"p95 {meas.p95_ms:.0f} ms is over the ratio but inside the baseline's usual range")

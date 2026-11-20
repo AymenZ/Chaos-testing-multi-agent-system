@@ -34,7 +34,7 @@ def test_everything_passing_with_signals_is_clean():
 def test_a_confirmed_failure_makes_the_label_findings_and_names_the_load():
     r = report([judged(), judged(endpoint=LOGIN, id="login-fail", p95_ms=300.0)])
     assert r.label == "findings" and len(r.findings) == 1
-    assert "login-fail" in r.findings[0] and "POST /api/login" in r.findings[0] and "1x capacity" in r.findings[0]
+    assert "login-fail" in r.findings[0] and "POST /api/login" in r.findings[0] and "1x its capacity" in r.findings[0]
 
 
 def test_untestable_and_inconclusive_results_make_it_incomplete_never_clean():
@@ -91,7 +91,7 @@ def test_the_markdown_has_a_table_the_label_and_the_adjustments():
     meas = make_meas(adjusted.target_rps, p95_ms=900.0, error_rate=0.02)
     res = judged_result(adjusted, meas, judge(adjusted, meas, BASE, RULES))
     md = render_markdown(report([judged(), res]))
-    assert "**Result: FINDINGS**" in md and "| big-ask | GET /api/me | 4x (1000 rps) | fail |" in md
+    assert "**Result: FINDINGS**" in md and "| big-ask | GET /api/me | 4x its capacity (1000 rps) | fail |" in md
     assert "900 ms (45.0x)" in md and "adjusted: load: 9.0x -> 4.0x" in md
     assert "## What was not covered" in md and "Clean means only" in md
 

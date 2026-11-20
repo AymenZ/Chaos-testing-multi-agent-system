@@ -2,10 +2,22 @@
 from swarm.verdict import Confirm, Outcome, judge, median_run, observed_signals, resolve_repeat
 from tests.helpers import RULES, make_base, make_experiment, make_meas
 
+NO_FLOOR = RULES.model_copy(update={"p95_floor_ms": 0})     # most tests here are about the ratio logic alone
 
-def run(multiple=1.0, signals=("api_cpu",), base=None, flags=None, **over):
+
+def run(multiple=1.0, signals=("api_cpu",), base=None, flags=None, rules=NO_FLOOR, **over):
     exp = make_experiment(multiple, signals=signals)
-    return judge(exp, make_meas(exp.target_rps, **over), base or make_base(), RULES, flags)
+    return judge(exp, make_meas(exp.target_rps, **over), base or make_base(), rules, flags)
+
+
+def test_a_p95_under_the_floor_never_fails_whatever_the_ratio():
+    v = run(base=make_base(p95_median_ms=5.0, p95_min_ms=4.0, p95_max_ms=6.0), p95_ms=35.0, rules=RULES)
+    assert v.outcome is not Outcome.FAIL                       # 7x slower, but 35 ms is under the 50 ms floor
+
+
+def test_above_the_floor_the_ratio_still_decides():
+    v = run(base=make_base(p95_median_ms=5.0, p95_min_ms=4.0, p95_max_ms=6.0), p95_ms=80.0, rules=RULES)
+    assert v.outcome is Outcome.FAIL
 
 
 def test_clean_numbers_and_observed_signals_pass():

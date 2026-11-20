@@ -1,15 +1,18 @@
 # swarm/graph.py
 """The v1 graph. Nodes are thin: each calls the real work in its own module and returns state changes.
 
-    preflight -> planner -> baseline -> tester -> guardrail -> pick -> runner -> validator -> verdict -> pick ...
-                                                                ^                    |
-                                                                +-- technical flaw: back to runner
-                                                                +-- design flaw: feedback -> tester
+    preflight -> planner -> baseline -> tester -> calibrate -> guardrail -> pick -> runner -> validator -> verdict -> pick ...
+                                                                              ^                    |
+                                                                              +-- technical flaw: back to runner
+                                                                              +-- design flaw: feedback -> tester
     pick -> report when nothing is left (or a budget ran out). Any early failure goes straight to report.
+
+Capacity is per endpoint: Calibrate measures every endpoint the tester picked (once, then cached), so
+"2x capacity" always means twice what THAT endpoint handled, and the Verdict compares against its own
+normal speed. Nothing about an endpoint's cost is assumed in advance.
 
 Agents propose (planner, tester); everything that decides is plain code.
 """
-import dataclasses
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,9 +22,9 @@ from langgraph.graph import END, START, StateGraph
 
 from adapters.gemini import GeminiError
 from swarm.audit import AuditLog
-from swarm.baseline import check_capacity
-from swarm.calibration import CalibrationError, baseline_target, make_plan, measure_baseline, save_baseline
-from swarm.guardrail import apply_guardrail
+from swarm.calibration import (CalibrationError, baseline_target, calibrate, endpoint_note, make_plan,
+                               save_baseline, slug)
+from swarm.guardrail import Rejection, apply_guardrail
 from swarm.manifest import Manifest
 from swarm.planner import Facts, PlannerError, plan
 from swarm.preflight import PreflightError, PreflightResult, run_preflight
@@ -64,6 +67,12 @@ def build_graph(deps: Deps):
         v = validate(exp, meas, m.resources.host_cpu_limit_pct)
         return (meas if v.valid else None), v
 
+    def measure(brief, key: str, note) -> Any:
+        """Smoke-test one request, then measure the endpoint's normal speed and capacity."""
+        smoke_probe(m, deps.sandbox, make_plan(m, key, note, m.baseline.normal_rps))
+        return calibrate(m, brief, lambda p, name: run_load(m, deps.sandbox, p, deps.out_dir / "calibration" / name),
+                         lambda: deps.sandbox.reset(health), progress=say, key=key)
+
     # --- nodes -------------------------------------------------------------------------
 
     def preflight(state: SwarmState) -> dict:
@@ -86,28 +95,18 @@ def build_graph(deps: Deps):
         return {"brief": brief}
 
     def baseline(state: SwarmState) -> dict:
+        """Is the backend healthy at usual traffic at all? Measured on the planner's baseline endpoint;
+        the result is also that endpoint's calibration, so it is never measured twice."""
         brief = state["brief"]
-
-        def measure():
-            return measure_baseline(
-                m, brief, lambda p, name: run_load(m, deps.sandbox, p, deps.out_dir / "baseline" / name),
-                lambda: deps.sandbox.reset(health), progress=say)
-
         try:
             key, note = baseline_target(brief, m.target.health_path)
-            smoke_probe(m, deps.sandbox, make_plan(m, key, note, m.baseline.normal_rps))
             say(f"baseline: measuring {key}")
-            run = measure()
-            if run.check.outcome == "retry":
-                say(f"baseline: the capacity check asked for another go ({run.check.reason})")
-                run = measure()
-                run = dataclasses.replace(run, check=check_capacity(
-                    run.summary, run.capacity, m.limits, m.baseline.normal_rps, retried=True))
+            run = measure(brief, key, note)
         except (CalibrationError, RunnerError) as e:
             return {"error": f"baseline failed: {e}"}
         save_baseline(run, deps.out_dir / "baseline.json")
         say(f"baseline: capacity check says {run.check.outcome.upper()}: {run.check.reason}")
-        return {"baseline": run}
+        return {"baseline": run, "calibrations": {key: run}}
 
     def tester(state: SwarmState) -> dict:
         feedback = state.get("feedback") or []
@@ -124,23 +123,58 @@ def build_graph(deps: Deps):
                                   max_attempts) for f in feedback]}
         return {"new_cards": cards, "cards": {**state.get("cards", {}), **{c.id: c for c in cards}}}
 
+    def calibrate_endpoints(state: SwarmState) -> dict:
+        """Measure each endpoint the new cards target, unless it was measured already."""
+        brief = state["brief"]
+        done, failed = dict(state.get("calibrations", {})), dict(state.get("uncalibrated", {}))
+        for key in dict.fromkeys(c.endpoint for c in state.get("new_cards", [])):
+            if key in done or key in failed:
+                continue
+            say(f"calibrate: measuring {key} on its own")
+            try:
+                run = measure(brief, key, endpoint_note(brief, key))
+            except (CalibrationError, RunnerError) as e:
+                failed[key] = str(e)
+                say(f"calibrate: {key} could not be measured: {e}")
+                continue
+            save_baseline(run, deps.out_dir / "calibration" / f"{slug(key)}.json")
+            say(f"calibrate: {key}: {run.check.outcome.upper()}: {run.check.reason}")
+            done[key] = run
+        return {"calibrations": done, "uncalibrated": failed}
+
     def guardrail(state: SwarmState) -> dict:
+        """Size each card against the capacity of its own endpoint."""
         feedback, known = state.get("feedback") or [], state.get("experiments", {})
+        done, failed = state.get("calibrations", {}), state.get("uncalibrated", {})
         planned = state.get("planned", 0) - len(feedback)  # revised cards replace the ones they came from
-        gr = apply_guardrail(state.get("new_cards", []), state["brief"], state["baseline"].check.context, m,
-                             already_planned=planned)
+        experiments, rejected = [], []
+        by_endpoint: dict[str, list] = {}
+        for c in state.get("new_cards", []):
+            by_endpoint.setdefault(c.endpoint, []).append(c)
+        for key, cards in by_endpoint.items():
+            run = done.get(key)
+            if run is None:
+                rejected += [Rejection(c.id, f"{key} could not be measured: {failed.get(key, 'unknown reason')}")
+                             for c in cards]
+            elif run.check.context is None:
+                rejected += [Rejection(c.id, f"{key}: {run.check.reason}") for c in cards]
+            else:
+                gr = apply_guardrail(cards, state["brief"], run.check.context, m,
+                                     already_planned=planned + len(experiments))
+                experiments += gr.experiments
+                rejected += gr.rejected
         revised = {f.card.id for f in feedback}
         lost = [untestable_result(known[r.card_id], [f"the revised card was rejected: {r.reason}"], max_attempts)
-                for r in gr.rejected if r.card_id in revised]
-        for e in gr.experiments:
-            say(f"guardrail: {e.id} {e.endpoint} at {e.load_multiple:g}x ({e.target_rps:.0f} rps)"
+                for r in rejected if r.card_id in revised]
+        for e in experiments:
+            say(f"guardrail: {e.id} {e.endpoint} at {e.load_multiple:g}x its capacity ({e.target_rps:.0f} rps)"
                 + (f" [{'; '.join(e.adjustments)}]" if e.adjustments else ""))
-        for r in gr.rejected:
+        for r in rejected:
             say(f"guardrail: rejected {r.card_id}: {r.reason}")
-        return {"experiments": {**known, **{e.id: e for e in gr.experiments}},
-                "queue": [*state.get("queue", []), *gr.experiments],
-                "planned": planned + len(gr.experiments),
-                "rejected": [r for r in gr.rejected if r.card_id not in revised],
+        return {"experiments": {**known, **{e.id: e for e in experiments}},
+                "queue": [*state.get("queue", []), *experiments],
+                "planned": planned + len(experiments),
+                "rejected": [r for r in rejected if r.card_id not in revised],
                 "results": lost, "feedback": [], "new_cards": []}
 
     def pick(state: SwarmState) -> dict:
@@ -192,7 +226,7 @@ def build_graph(deps: Deps):
 
     def verdict(state: SwarmState) -> dict:
         exp, meas, v, attempt = state["current"], state["measurement"], state["validity"], state["attempt"]
-        base, rules = state["baseline"].summary, m.rules.default
+        base, rules = state["calibrations"][exp.endpoint].summary, m.rules.default   # its own normal speed
         outcome = judge(exp, meas, base, rules, v.flags)
         say(f"verdict: {exp.id}: {outcome.outcome.value}"
             + (f", confirming ({outcome.confirm.value})" if outcome.confirm is not Confirm.NONE else ""))
@@ -215,7 +249,7 @@ def build_graph(deps: Deps):
         rep = build_report(preflight=state.get("preflight"), brief=state.get("brief"),
                            baseline=run.summary if run else None, capacity=run.check if run else None,
                            results=state.get("results", []), rejected=state.get("rejected", []),
-                           truncated=state.get("truncated", False))
+                           truncated=state.get("truncated", False), calibrations=state.get("calibrations", {}))
         if state.get("error"):
             rep.notes.insert(0, f"The run stopped early: {state['error']}")
         md, _ = write_report(rep, deps.out_dir)
@@ -236,7 +270,7 @@ def build_graph(deps: Deps):
         return "tester"
 
     def after_tester(state: SwarmState) -> str:
-        return "report" if state.get("error") else "guardrail"
+        return "report" if state.get("error") else "calibrate"
 
     def after_pick(state: SwarmState) -> str:
         if state.get("truncated"):
@@ -255,14 +289,15 @@ def build_graph(deps: Deps):
 
     g = StateGraph(SwarmState)
     for name, fn in [("preflight", preflight), ("planner", planner), ("baseline", baseline), ("tester", tester),
-                     ("guardrail", guardrail), ("pick", pick), ("runner", runner), ("validator", validator), ("verdict", verdict),
+                     ("calibrate", calibrate_endpoints), ("guardrail", guardrail), ("pick", pick), ("runner", runner), ("validator", validator), ("verdict", verdict),
                      ("report", report)]:
         g.add_node(name, fn)
     g.add_edge(START, "preflight")
     g.add_conditional_edges("preflight", after_preflight, ["planner", "report"])
     g.add_conditional_edges("planner", after_planner, ["baseline", "report"])
     g.add_conditional_edges("baseline", after_baseline, ["tester", "report"])
-    g.add_conditional_edges("tester", after_tester, ["guardrail", "report"])
+    g.add_conditional_edges("tester", after_tester, ["calibrate", "report"])
+    g.add_edge("calibrate", "guardrail")
     g.add_edge("guardrail", "pick")
     g.add_conditional_edges("pick", after_pick, ["runner", "tester", "report"])
     g.add_edge("runner", "validator")

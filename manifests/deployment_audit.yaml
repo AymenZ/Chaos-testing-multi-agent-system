@@ -30,6 +30,7 @@ limits:
 rules:
   default:
     p95_vs_baseline_max: 2.0         # capacity cards (up to 1x capacity)
+    p95_floor_ms: 50                 # under this, a p95 counts as fast even if it is many times the baseline
     error_rate_max: 0.01
     recovery_max_s: 30               # burst cards: back to normal within this
 

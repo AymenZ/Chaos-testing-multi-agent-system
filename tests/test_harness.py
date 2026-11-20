@@ -88,7 +88,7 @@ def test_a_borderline_result_is_judged_on_the_median_of_three_runs():
 
 
 def test_a_borderline_result_that_stays_bad_still_fails():
-    r, _ = go(fair(44.0), fair(45.0), fair(100.0))
+    r, _ = go(fair(55.0), fair(58.0), fair(100.0))              # limit is the 50 ms floor: borderline, median 58
     assert r.outcome == "fail"
 
 
