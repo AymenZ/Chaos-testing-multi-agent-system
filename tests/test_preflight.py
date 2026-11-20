@@ -73,7 +73,8 @@ def test_seed_count_mismatch_fails_at_seed(m):
 def test_seed_sql_uses_enum_labels_and_supplies_defaults(m):
     fake = FakeSandbox(user_count=m.seed.rows["users"])
     seed(m, fake)
-    named, filler = fake.sql[0], fake.sql[1]
+    assert fake.sql[0] == "TRUNCATE users"            # a re-run must not collide with the last run's rows
+    named, filler = fake.sql[1], fake.sql[2]
     assert "'ADMIN'::user_role_enum" in named and "gen_random_uuid()" in named and HASH in named
     assert f"generate_series(1, {m.seed.rows['users'] - len(m.auth.seed_users)})" in filler
 

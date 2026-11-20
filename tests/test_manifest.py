@@ -16,7 +16,7 @@ VALID = {
     "baseline": {"repeats": 5, "warmup_s": 15, "measure_s": 60, "normal_rps": 20, "ramp_step_factor": 2.0},
     "resources": {"api_cpus": 1, "db_cpus": 1, "loadgen_cpus": 1, "host_cpu_limit_pct": 85},
     "budgets": {"max_experiments": 10, "max_attempts": 3, "wall_clock_s": 5400, "max_llm_calls": 20},
-    "llm": {"planner_model": "claude-opus-5-5", "effort": "medium", "max_tokens": 16000, "planner_max_steps": 12,
+    "llm": {"provider": "anthropic", "planner_model": "claude-opus-5-5", "effort": "medium", "max_tokens": 16000, "planner_max_steps": 12,
             "tester_model": "claude-opus-5-5", "tester_max_calls": 2},
 }
 

@@ -142,7 +142,8 @@ class Sandbox:
 
     def snapshot(self, health_url: str) -> None:
         """Save the current (seeded) database as the clean copy."""
-        self._swap_db([f"CREATE DATABASE {MASTER_DB} TEMPLATE {DB_NAME}"], health_url)
+        self._swap_db([f"DROP DATABASE IF EXISTS {MASTER_DB} WITH (FORCE)",
+                       f"CREATE DATABASE {MASTER_DB} TEMPLATE {DB_NAME}"], health_url)
 
     def reset(self, health_url: str) -> None:
         """Back to the clean copy in seconds: no rebuild, no reseed."""

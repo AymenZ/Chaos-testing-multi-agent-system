@@ -96,9 +96,17 @@ class Budgets(Strict):
     max_llm_calls: int = Field(ge=0)    # 0 is fine for the no-LLM slice
 
 
+class ModelLimit(Strict):
+    """A model's free-tier allowance, copied from the provider's dashboard (Google AI Studio)."""
+    rpm: int = Field(gt=0)     # requests per minute
+    rpd: int = Field(gt=0)     # requests per day
+
+
 class Llm(Strict):
+    provider: Literal["anthropic", "gemini"]
+    limits: dict[str, ModelLimit] = Field(default_factory=dict)   # per model; calls are paced and counted against these
     planner_model: str
-    effort: Literal["low", "medium", "high", "xhigh", "max"]
+    effort: Literal["low", "medium", "high", "xhigh", "max"]      # Anthropic only; Gemini ignores it
     max_tokens: int = Field(gt=0)               # per model call
     planner_max_steps: int = Field(ge=2)        # model calls the planner may spend exploring + submitting
     tester_model: str
@@ -120,6 +128,13 @@ class Manifest(Strict):
     def _cross_checks(self):
         if self.limits.request_timeout_s >= self.limits.max_duration_s:
             raise ValueError("request_timeout_s must be shorter than max_duration_s")
+        if self.llm.provider == "gemini":
+            for name, steps in ((self.llm.planner_model, self.llm.planner_max_steps), (self.llm.tester_model, self.llm.tester_max_calls)):
+                lim = self.llm.limits.get(name)
+                if lim is None:
+                    raise ValueError(f"llm.limits has no entry for '{name}': copy its limits from the provider dashboard")
+                if steps > lim.rpd:
+                    raise ValueError(f"'{name}' allows only {lim.rpd} calls a day, fewer than the {steps} one run may use")
         if self.baseline.normal_rps > self.limits.max_rps:
             raise ValueError("baseline.normal_rps cannot exceed limits.max_rps")
         if self.llm.planner_max_steps + self.llm.tester_max_calls > self.budgets.max_llm_calls:

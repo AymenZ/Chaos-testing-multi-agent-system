@@ -34,11 +34,11 @@ rules:
     recovery_max_s: 30               # burst cards: back to normal within this
 
 baseline:
-  repeats: 5
+  repeats: 3
   warmup_s: 15
-  measure_s: 60
+  measure_s: 30
   normal_rps: 20                     # what we call usual traffic for this backend (a stand-in): baseline runs here
-  ramp_step_factor: 2.0              # capacity ramp: 20, 40, 80, ... up to limits.max_rps
+  ramp_step_factor: 3.0              # capacity ramp: 20, 60, 180, ... up to limits.max_rps
 
 resources:
   api_cpus: 1
@@ -52,9 +52,18 @@ budgets:
   wall_clock_s: 5400
   max_llm_calls: 20
 llm:
-  planner_model: claude-sonnet-5-5     # your main cost lever; swap to claude-sonnet-5-5 to cut cost, then re-check brief quality
-  effort: medium
+  provider: gemini                   # gemini (free tier) or anthropic
+  planner_model: gemini-3.5-flash-lite   # 500 calls a day. Swap to gemini-3.1-flash-lite if it misbehaves
+  tester_model: gemini-3.5-flash-lite
+  effort: medium                     # Anthropic only
   max_tokens: 16000                  # per model call
-  planner_max_steps: 12              # model calls the planner may spend; must be <= budgets.max_llm_calls
-  tester_model: claude-sonnet-5-5
+  planner_max_steps: 12              # model calls the planner may spend; planner + tester must fit budgets.max_llm_calls
   tester_max_calls: 2                # first attempt + one repair when its cards are rejected
+  limits:                            # your free-tier allowance per model, from Google AI Studio's rate-limit page
+    gemini-3.5-flash-lite: {rpm: 15, rpd: 500}
+    gemini-3.1-flash-lite: {rpm: 15, rpd: 500}
+    gemini-3.8-flash:      {rpm: 5,  rpd: 20}    # scarce: keep for quality comparisons
+    gemini-3.6-flash:      {rpm: 5,  rpd: 20}
+    gemini-3-flash:        {rpm: 5,  rpd: 20}
+    gemini-2.5-flash:      {rpm: 5,  rpd: 20}
+    gemini-2.5-flash-lite: {rpm: 10, rpd: 20}

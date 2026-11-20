@@ -28,6 +28,8 @@ def seed(m: Manifest, sandbox: Sandbox) -> dict:
     if not all(h.startswith("$2") for h in hashes.values()):
         raise SandboxError(f"seed: app did not return bcrypt hashes: {list(hashes.values())!r}")
 
+    sandbox.psql("TRUNCATE users")      # the sandbox database outlives a run: start from empty every time
+
     # The schema has no default for id or is_active; role labels are uppercase in the enum.
     named_rows = ", ".join(
         f"(gen_random_uuid(), {_q(u.email)}, {_q(hashes[u.password])}, "

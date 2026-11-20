@@ -38,6 +38,7 @@ class Experiment(Strict):
     query: dict[str, str | int | float | bool]
     json_body: dict[str, Any] | None
     form_body: dict[str, str] | None
+    load_multiple: float          # the multiple of capacity actually applied (after clamping)
     target_rps: float
     warmup_rps: float
     warmup_s: int
@@ -123,7 +124,7 @@ def apply_guardrail(cards: list[Card], brief: Brief, capacity: CapacityContext, 
             id=card.id, hypothesis=card.hypothesis, risk_id=card.risk_id, endpoint=card.endpoint,
             method=method, path=path, auth_role=recipe.auth_role, query=recipe.query,
             json_body=recipe.json_body, form_body=recipe.form_body,
-            target_rps=target_rps, warmup_rps=min(target_rps, WARMUP_FRACTION * capacity.rps),
+            load_multiple=multiple, target_rps=target_rps, warmup_rps=min(target_rps, WARMUP_FRACTION * capacity.rps),
             warmup_s=warmup_s, ramp_s=ramp, hold_s=hold,
             min_delivered=card.min_delivered, abort_error_rate=card.abort_error_rate, signals=card.signals,
             max_vus=limits.max_vus, timeout_s=limits.request_timeout_s, adjustments=notes,

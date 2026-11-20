@@ -3,7 +3,7 @@ name = "chaos-swarm"
 version = "0.0.1"
 description = "Multi-agent chaos tester for small Docker Compose stacks (API + Postgres)"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.7", "pyyaml>=6", "anthropic>=1.0", "jsonschema>=4", "psutil>=5"]
+dependencies = ["pydantic>=2.7", "pyyaml>=6", "anthropic>=1.0", "jsonschema>=4", "psutil>=5", "python-dotenv>=1", "google-genai>=2", "langgraph>=1.0","tzdata>=2024; sys_platform == 'win32'"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

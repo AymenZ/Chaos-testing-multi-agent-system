@@ -27,6 +27,7 @@ def test_cards_become_exact_numbers(env):
     e = r.experiments[0]
     assert r.rejected == [] and e.adjustments == []
     assert (e.target_rps, e.warmup_rps, e.warmup_s, e.ramp_s, e.hold_s) == (500, 125, 15, 10, 60)
+    assert e.load_multiple == 2.0
     assert (e.method, e.path, e.auth_role) == ("POST", "/api/login", "none")
     assert e.total_s == 85
 
@@ -39,7 +40,7 @@ def test_the_recipe_is_attached_with_placeholders_intact(env):
 
 def test_too_much_load_is_clamped_and_noted(env):
     e = run(env, card(load_multiple=9.0)).experiments[0]
-    assert e.target_rps == 1000 and any("9.0x -> 4.0x" in a for a in e.adjustments)
+    assert e.target_rps == 1000 and e.load_multiple == 4.0 and any("9.0x -> 4.0x" in a for a in e.adjustments)
 
 
 def test_the_rate_never_exceeds_the_manifest_even_if_capacity_data_is_off(env):

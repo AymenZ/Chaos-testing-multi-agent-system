@@ -162,3 +162,17 @@ def test_every_call_uses_manifest_settings_and_keeps_thinking_blocks(env):
     assert "tool_choice" not in first                       # forced tool use is rejected by current models
     assistant = client.calls[1]["messages"][1]
     assert thinking in assistant["content"]                 # echoed back unchanged
+
+
+def test_the_slips_a_real_model_made_are_accepted_on_the_first_submit(env):
+    """Replays the shapes that burned two live runs: null query, missing writes_data, a very long quote,
+    baseline targets written as objects."""
+    brief = good_brief()
+    for note in brief["endpoints"]:
+        del note["writes_data"]
+        note["recipe"]["query"] = None
+    brief["endpoints"][0]["evidence"] = [dict(ref="app/security.py", quote="pwd_context = CryptContext" + " " * 400)]
+    brief["baseline_targets"] = [{"method": "GET", "path": "/api/me"}]
+    result, client = run(env, reply(use("a", "submit_brief", **brief)))
+    assert len(client.calls) == 1 and result.output.baseline_targets == ["GET /api/me"]
+    assert result.output.endpoints[1].load_suitability == "caution" and result.output.endpoints[1].writes_data is True

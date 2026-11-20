@@ -45,9 +45,9 @@ flowchart TD
 | Request tester | One structured model call (with repairs) that turns the brief and measured capacity into a few experiment cards. Load is a multiple of capacity; it accepts Validator feedback to revise a card | **built, tested with a fake model; not yet run on a real one** |
 | Guardrail | Turns each card into exact numbers: clamps load and duration to the manifest limits (and records it), rejects unrunnable cards, enforces the experiment budget, double-checks the target host | **built, tested** |
 | Runner | Reset, one smoke request, then k6 (a one-off container on the sandbox network) sends the load; reads k6's summary and adds machine peaks | **built, tested against fakes; not yet run against real k6** |
-| Validator | Fair test? Says whether a retry should rerun or redesign | to build |
-| Verdict | Pass or fail against baseline | to build |
-| Report | Per experiment: pass / fail / could not test, with numbers | to build |
+| Validator | Fair test? Technical flaw (our machine saturated, no numbers) means rerun the same card; design flaw (a pile of refused requests) means send it back to the tester | **built, tested** |
+| Verdict | Pass / fail / inconclusive against the baseline and its usual range. A pass needs the card's expected signals to have appeared (else a weak pass, reported as inconclusive). p95 is judged up to measured capacity; above it the error rate and early abort decide | **built, tested** |
+| Report | Per experiment: pass / fail / inconclusive / could not test, with numbers, plus an overall label (clean, incomplete, findings, not run) and what was **not** covered. Markdown and JSON | **built, tested** |
 
 Out of v1: scheduler, explainer, human gates, database and failure testers, refactor, follow-up rounds.
 
@@ -131,11 +131,11 @@ flowchart TD
 | `scripts/` | Run a piece on its own: `run_planner.py`, `run_load.py` (one load plan against the live sandbox) |
 | `evals/` | Scoreboard for the agents against fixtures. Empty |
 | `runs/` | Output of each run: briefs, measurements, audit log. Git-ignored |
-| `tests/` | 129 unit tests. `tests/data/` holds a real API description and database schema from the target |
+| `tests/` | 222 unit tests. `tests/data/` holds a real API description and database schema from the target |
 
 ## Prerequisites
 
-Python 3.12, Git, WSL2 and Docker Desktop (installed; runs the sandbox). An Anthropic API key is needed to run the planner. k6 and Postgres run as Docker images, so nothing else to install.
+Python 3.12, Git, WSL2 and Docker Desktop (installed; runs the sandbox). A Gemini API key (free tier) or an Anthropic key, for the two agents. k6 and Postgres run as Docker images, so nothing else to install.
 
 ## Build order
 
@@ -146,7 +146,8 @@ Python 3.12, Git, WSL2 and Docker Desktop (installed; runs the sandbox). An Anth
 | Planner agent | Explores the target, writes the brief | **done**, awaiting its first real-model run |
 | Request tester | Turns a brief into experiment cards | **done**, awaiting its first real-model run |
 | Guardrail, Runner | Resolve cards into exact experiments; send the load | **done**; Runner awaiting its first real k6 run |
-| Validator, Verdict, Report | The remaining deterministic nodes | next: Validator |
+| Validator, Verdict, Report | The remaining deterministic nodes | **done** |
+| Baseline node, graph and state | Measure the baseline and capacity with the runner; wire everything together | you |
 | Graph and state | Wiring the nodes together | you |
 | Later | Scheduler, explainer, database and failure testers, refactor, follow-up rounds, fixtures and evals | |
 
@@ -193,19 +194,23 @@ Open <http://127.0.0.1:8000/docs> and use **Authorize**: `user0@example.com` / `
 
     .venv\Scripts\python -c "from swarm.manifest import load_manifest; from swarm.preflight import make_sandbox; make_sandbox(load_manifest('manifests/deployment_audit.yaml')).down()"
 
-## Run the planner on its own
+## A real run, step by step
 
-Needs an API key in the environment (`$env:ANTHROPIC_API_KEY = "..."` in PowerShell). Output goes to `runs/planner_<time>/` as `brief.json` plus `audit.jsonl` (every denied read, dropped claim and budget event).
+Each script runs one part of the pipeline for real and saves its output under `runs/`, so the next script picks up the newest result. Docker Desktop must be running. The graph will eventually replace this manual chain.
 
-Offline, using saved facts (no Docker):
+**One-time setup:** paste a key into `.env` (`GEMINI_API_KEY` for the default provider, from <https://aistudio.google.com/apikey>). The provider, model names and request pacing live in the manifest's `llm` section. Check the model IDs and limits in the manifest against Google AI Studio.
 
-    .venv\Scripts\python scripts\run_planner.py --offline
+| Step | Command | What it does | LLM calls |
+|---|---|---|---|
+| 1 | Launch the sandbox (see "Manual sandbox testing") | Start the stack, seed it, save the clean copy | 0 |
+| 2 | `python scripts/run_planner.py` | Planner explores the code and API, writes `brief.json` | up to 12 |
+| 3 | `python scripts/run_baseline.py` | Measures normal speed at `normal_rps`, then ramps up to find capacity (about 15 to 20 minutes) | 0 |
+| 4 | `python scripts/run_tester.py` | Tester designs cards from the brief and the measured capacity; the Guardrail resolves them | up to 2 |
+| 5 | `python scripts/run_experiments.py` | Runs every experiment, validates, judges, writes `report.md` and `report.json` | 0 |
 
-Against the live sandbox (launch it first):
+Run them with the venv's Python (`.venv\Scripts\python` on Windows). Quick checks: `run_planner.py --offline` (planner with saved facts, no Docker), `run_tester.py --capacity-rps 120` (tester with a stand-in capacity), `run_load.py` (one load plan by hand).
 
-    .venv\Scripts\python scripts\run_planner.py
-
-The model, effort and step budget live in the manifest's `llm` section.
+On Gemini: the planner and tester are written against an Anthropic-shaped client, and `adapters/gemini.py` translates. The manifest's `llm.limits` table holds your free-tier allowance per model (copy it from Google AI Studio's rate-limit page). Calls are paced to each model's per-minute limit and counted against its daily limit in `runs/llm_usage.json`; the tool refuses to call a model whose day is used up. Every attempt counts, retries included, so retries are capped at 2. Defaults are the two Flash-Lite models (500 calls a day each); the full Flash models allow only 20 a day, so keep them for quality comparisons.
 
 ## Dev
 
